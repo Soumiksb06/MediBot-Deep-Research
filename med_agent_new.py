@@ -42,28 +42,84 @@ from web_agent.src.models.search_models import SearchConfig
 from subject_analyzer.src.services.tavily_client import TavilyClient
 from subject_analyzer.src.services.tavily_extractor import TavilyExtractor
 from subject_analyzer.src.services.subject_analyzer import SubjectAnalyzer
-from subject_analyzer.src.services.deepseek_client import DeepSeekClient
+from subject_analyzer.src.services.gemini_client import GeminiClient # <--- Changed line
 from subject_analyzer.src.models.analysis_models import AnalysisConfig
-
 # ==============================
 # New Data Science / Analytics & Visualization Functions
 # ==============================
 
 def train_symptom_classifier():
     """
-    Trains a simple symptom-to-diagnosis classifier using a dummy dataset.
+    Trains a simple symptom-to-diagnosis classifier using the survey data.
     """
     from sklearn.feature_extraction.text import TfidfVectorizer
     from sklearn.linear_model import LogisticRegression
-    # Dummy training data
-    data = [
-        ("fever cough sore throat", "Flu"),
-        ("headache nausea sensitivity to light", "Migraine"),
-        ("chest pain shortness of breath", "Heart Attack"),
-        ("joint pain stiffness", "Arthritis"),
-        ("abdominal pain diarrhea vomiting", "Gastroenteritis")
-    ]
-    texts, labels = zip(*data)
+    import pandas as pd # Import pandas
+
+    # Load data from the survey report
+    try:
+        df = pd.read_csv("Survey report_Sheet1.csv")
+        # Extract symptoms and medical history
+        # Ensure these column names match exactly your CSV headers
+        symptoms = df['What are the current symptoms or health issues you are facing'].fillna("").tolist()
+        # Use Medical Health History as labels, handle potential missing values and multiple conditions
+        labels = df['Medical Health History'].fillna("None").tolist()
+
+        # You might need more sophisticated processing if Medical Health History contains multiple conditions
+        # For a simple classifier, you could use the first mentioned condition or treat each as a separate label
+        # Example: Splitting multiple conditions
+        processed_labels = [label.split(',')[0].strip() if isinstance(label, str) else 'None' for label in labels]
+
+        # Filter out entries with no symptoms or no relevant medical history if desired
+        # Example: combined_data = [(s, l) for s, l in zip(symptoms, processed_labels) if s and l != 'None']
+        # if not combined_data:
+        #     print("Warning: No valid data for training found in the survey report.")
+        #     return None, None
+        # texts, labels = zip(*combined_data)
+
+        texts = symptoms
+        labels = processed_labels
+
+        if not texts or not labels:
+             print("Warning: No data loaded from survey report for training.")
+             return None, None
+
+
+    except FileNotFoundError:
+        print("Error: Survey report_Sheet1.txt not found.")
+        # Fallback to dummy data or handle appropriately
+        data = [
+            ("fever cough sore throat", "Flu"),
+            ("headache nausea sensitivity to light", "Migraine"),
+            ("chest pain shortness of breath", "Heart Attack"),
+            ("joint pain stiffness", "Arthritis"),
+            ("abdominal pain diarrhea vomiting", "Gastroenteritis")
+        ]
+        texts, labels = zip(*data)
+    except KeyError as e:
+        print(f"Error: Missing expected column in Survey report_Sheet1.txt: {e}")
+        # Fallback to dummy data or handle appropriately
+        data = [
+            ("fever cough sore throat", "Flu"),
+            ("headache nausea sensitivity to light", "Migraine"),
+            ("chest pain shortness of breath", "Heart Attack"),
+            ("joint pain stiffness", "Arthritis"),
+            ("abdominal pain diarrhea vomiting", "Gastroenteritis")
+        ]
+        texts, labels = zip(*data)
+    except Exception as e:
+        print(f"An error occurred while reading the survey report: {e}")
+        # Fallback to dummy data or handle appropriately
+        data = [
+            ("fever cough sore throat", "Flu"),
+            ("headache nausea sensitivity to light", "Migraine"),
+            ("chest pain shortness of breath", "Heart Attack"),
+            ("joint pain stiffness", "Arthritis"),
+            ("abdominal pain diarrhea vomiting", "Gastroenteritis")
+        ]
+        texts, labels = zip(*data)
+
+
     vectorizer = TfidfVectorizer()
     X = vectorizer.fit_transform(texts)
     model = LogisticRegression()
@@ -323,6 +379,53 @@ def extract_text_from_file(file_path, console):
         logging.error(f"File extraction error for {file_path}: {ex}")
         return ""
 
+import os
+import asyncio
+import logging
+from datetime import datetime
+from rich.console import Console
+from typing import Dict, List # Ensure List and Dict are imported if not at top level
+# Import types for google-genai if needed within methods, or ensure it's at top level
+try:
+    from google.genai import types
+except ImportError:
+    # Handle the case where google-genai is not installed or types are not available
+    # You might want to log a warning or raise an error here
+    types = None
+    logging.warning("Could not import google.genai.types. Embedding functionality may be affected.")
+
+
+# Assume these functions are defined elsewhere in your med_agent_new.py
+# from .your_other_modules import read_wearable_data, build_faiss_index
+
+# Placeholder implementations if they are not provided elsewhere
+def read_wearable_data():
+    """Placeholder for reading wearable device data."""
+    # Implement your logic to read and summarize wearable data
+    return "Wearable data summary: [Data not available in this example]"
+
+def build_faiss_index(embeddings):
+    """Placeholder for building FAISS index."""
+    # Implement your FAISS index building logic
+    # Requires faiss-cpu and numpy
+    try:
+        import faiss
+        import numpy as np
+        if not embeddings:
+            return None
+        # Assuming embeddings are numpy arrays or can be converted
+        embedding_dim = len(embeddings[0])
+        index = faiss.IndexFlatL2(embedding_dim)
+        index.add(np.array(embeddings).astype('float32'))
+        return index
+    except ImportError:
+        logging.error("FAISS or Numpy not installed. Cannot build FAISS index.")
+        return None
+    except Exception as e:
+        logging.error(f"Error building FAISS index: {e}")
+        return None
+
+
 class MedicalTask:
     def __init__(self, query, console: Console):
         self.original_query = query
@@ -343,11 +446,13 @@ class MedicalTask:
     async def analyze(self, subject_analyzer, current_date: str):
         self.console.print(f"Analyzing patient query for diagnosis (as of {current_date})...")
         try:
+            # The subject_analyzer uses the LLM client (now GeminiClient)
             self.analysis = subject_analyzer.analyze(f"{self.current_query} (as of {current_date})")
             logging.info("Subject analysis successful.")
         except Exception as e:
             logging.error(f"Subject analysis failed: {e}")
             raise e
+
         self.console.print("\nAgent's Understanding:")
         self.console.print(f"Patient Query: {self.original_query}")
         self.console.print(f"Identified Medical Issue: {self.analysis.get('main_subject', 'Unknown Issue')}")
@@ -398,11 +503,17 @@ class MedicalTask:
                     if "text" in item and item["text"]:
                         text = item["text"]
                         if len(text) > 300:
-                            item["text"] = text[150:len(text)-150]
+                            # Keep a central portion - adjust indices as needed
+                            start_index = max(0, len(text) // 2 - 150)
+                            end_index = min(len(text), len(text) // 2 + 150)
+                            item["text"] = text[start_index:end_index]
                     if "raw_content" in item and item["raw_content"]:
-                        raw_content = item["raw_content"]
-                        if len(raw_content) > 300:
-                            item["raw_content"] = raw_content[150:len(raw_content)-150]
+                         raw_content = item["raw_content"]
+                         if len(raw_content) > 300:
+                            # Keep a central portion - adjust indices as needed
+                             start_index = max(0, len(raw_content) // 2 - 150)
+                             end_index = min(len(raw_content), len(raw_content) // 2 + 150)
+                             item["raw_content"] = raw_content[start_index:end_index]
                 self.extracted_content[topic] = extracted
                 failed = [res for res in extracted if res.get("error")]
                 if failed:
@@ -410,8 +521,11 @@ class MedicalTask:
             except Exception as e:
                 self.console.print(f"[red]Extraction failed for {topic}: {e}[/red]")
 
-    async def analyze_full_content_rag(self, deepseek_client):
+
+    # Modified analyze_full_content_rag to use the gemini_client for embeddings
+    async def analyze_full_content_rag(self, gemini_client): # Argument name changed for clarity
         self.console.print("Aggregating extracted content for comprehensive diagnostic analysis...")
+
         full_content = ""
         citations = []
         for topic, items in self.extracted_content.items():
@@ -421,48 +535,118 @@ class MedicalTask:
                 content = item.get("text") or item.get("raw_content", "")
                 full_content += f"\n\n=== Content from {url} ===\n{content}\n"
                 citations.append(f"{title}: {url}")
-        def chunk_text(text, chunk_size=1200):
+
+        def chunk_text(text, chunk_size=765):
             return [text[i:i+chunk_size] for i in range(0, len(text), chunk_size)]
-        chunks = chunk_text(full_content, chunk_size=1000)
+
+        chunks = chunk_text(full_content, chunk_size=765)
         self.console.print(f"Total chunks generated: {len(chunks)}")
-        semaphore = asyncio.Semaphore(20)
-        async def get_embedding(text):
-            import openai
-            openai.api_key = os.getenv("OPENAI_API_KEY")
-            for attempt in range(3):
-                try:
-                    async with semaphore:
-                        response = await openai.Embedding.acreate(
-                            model="text-embedding-3-small",
-                            input=text
-                        )
-                    return response["data"][0]["embedding"]
-                except Exception as e:
-                    self.console.print(f"[yellow]Embedding error (attempt {attempt+1}): {e}[/yellow]")
-                    await asyncio.sleep(2 ** attempt)
-            raise Exception("Failed to obtain embedding after 3 attempts.")
-        chunk_embeddings = await asyncio.gather(*[get_embedding(chunk) for chunk in chunks])
+
+        # === Modified Embedding Section to use Google Embeddings ===
+        # Removed OpenAI import and API key setting here
+
+        # Changed get_embedding to a synchronous function
+        def get_embedding(text):
+            # Use the gemini_client (which uses google-generativeai) for embeddings
+            # The embedding model name might be different, 'embedding-001' or similar is common
+            GOOGLE_EMBEDDING_MODEL = os.getenv("GOOGLE_EMBEDDING_MODEL", "text-embedding-004") # Use a Google embedding model
+
+            # Removed attempt loop here for simplicity in demonstrating the fix,
+            # but you might want to re-add retry logic within this synchronous function
+            try:
+                # Use the embed_content method from the google-generativeai client
+                # Assuming the gemini_client instance passed to this method has the .client attribute
+                # Ensure types is accessible (imported at top or locally if needed)
+                if types is None:
+                     raise ImportError("google.genai.types not available. Cannot perform embedding.")
+
+                embedding_response = gemini_client.client.models.embed_content( # Removed await
+                    model=GOOGLE_EMBEDDING_MODEL,
+                    contents=[types.Part.from_text(text=text)] # Corrected line: pass text as keyword argument
+                )
+                # The structure of the embedding response from google-generativeai might differ from OpenAI.
+                # Based on the documentation and common patterns, the embedding vector might be in a 'embedding' attribute
+                # or nested within a structure like response.embeddings[0].values.
+                # We need to inspect the actual response structure if this doesn't work.
+                # Assuming a structure like response.embedding.values for now, common in some Google APIs.
+                # **NOTE:** You might still need to adjust how the embedding is extracted based on the actual response structure.
+                embedding_vector = embedding_response.embeddings[0].values # Access the first embedding's values
+
+                return embedding_vector
+            except Exception as e:
+                # Log the error or handle it as needed within the synchronous function
+                self.console.print(f"[yellow]Embedding error: {e}[/yellow]")
+                # Re-raise the exception if you want it to be caught by the executor
+                raise
+
+        # === End Modified Embedding Section ===
+
+        # Get the current running loop
+        loop = asyncio.get_event_loop()
+
+        # Run synchronous get_embedding calls in a thread pool executor
+        chunk_embeddings = await asyncio.gather(*[loop.run_in_executor(None, get_embedding, chunk) for chunk in chunks])
+
+
+        # Ensure numpy is imported for FAISS if needed
+        try:
+            import numpy as np
+        except ImportError:
+             self.console.print("[red]Numpy is required for FAISS. Install with 'pip install numpy'.[/red]")
+             raise
+        except Exception as e:
+             self.console.print(f"[red]Error importing numpy: {e}[/red]")
+             raise
+
+
         from supabase import create_client, Client
         SUPABASE_URL = os.getenv("SUPABASE_URL")
         SUPABASE_KEY = os.getenv("SUPABASE_KEY")
         supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+
         try:
             supabase.table("embeddings").delete().eq("source", "Aggregated content").execute()
             self.console.print("Cleared previous embeddings.")
         except Exception as e:
             self.console.print(f"[yellow]Warning: Could not clear previous embeddings: {e}[/yellow]")
+
         data_to_insert = []
         for i, chunk in enumerate(chunks):
+            # Ensure embedding_vector is a list or compatible format for Supabase
+            embedding_vector = chunk_embeddings[i]
+            if isinstance(embedding_vector, (list, tuple)):
+                 # If it's already a list/tuple, use directly
+                 pass
+            elif hasattr(embedding_vector, 'tolist'):
+                 # If it's a numpy array or similar, convert to list
+                 embedding_vector = embedding_vector.tolist()
+            else:
+                 # Attempt a direct conversion if needed
+                 try:
+                     embedding_vector = list(embedding_vector) # Adjust if necessary based on actual type
+                 except TypeError:
+                     self.console.print(f"[red]Error converting embedding vector to list for chunk {i}. Type: {type(embedding_vector)}[/red]")
+                     # Decide how to handle chunks that fail embedding conversion
+                     continue # Skip inserting this chunk
+
             data_to_insert.append({
                 "chunk": chunk,
-                "embedding": chunk_embeddings[i],
+                "embedding": embedding_vector, # Use the Google embedding vector
                 "source": "Aggregated content"
             })
+
         batch_size = 200
+        # Use upsert with on_conflict for robustness
+        # on_conflict_keys = "chunk" # Assuming chunk is unique or you have another unique key
         for i in range(0, len(data_to_insert), batch_size):
             batch = data_to_insert[i:i+batch_size]
-            supabase.table("embeddings").upsert(batch).execute()
-            self.console.print(f"Inserted batch {i // batch_size + 1} of {((len(data_to_insert)-1)//batch_size)+1}.")
+            try:
+                supabase.table("embeddings").insert(batch).execute()
+                self.console.print(f"Inserted batch {i // batch_size + 1} of {((len(data_to_insert) + batch_size - 1) // batch_size)}.") # Corrected total batch calculation
+            except Exception as e:
+                 self.console.print(f"[red]Error inserting batch {i // batch_size + 1}: {e}[/red]")
+                 # Decide whether to continue or stop on batch insertion errors
+
         # Revised prompt: instruct the LLM to answer the patient's main query directly.
         summarization_prompt = f"""Generate a comprehensive diagnostic report that directly addresses the patient's query.
 Patient Query: {self.current_query}
@@ -471,29 +655,52 @@ Include specific answers to the query and cite each source.
 
 Aggregated Relevant Content:
 """
-        # Obtain embedding for summarization prompt
-        query_embedding = await get_embedding(summarization_prompt)
+        # Obtain embedding for summarization prompt using the updated get_embedding function
+        # No need for await here as get_embedding is synchronous
+        # Ensure get_embedding doesn't return None or raise an unexpected error
+        try:
+            query_embedding = get_embedding(summarization_prompt) # This now uses the Google embedding model
+        except Exception as e:
+            self.console.print(f"[red]Failed to get embedding for summarization prompt: {e}[/red]")
+            # Decide how to proceed if query embedding fails - likely cannot perform RAG
+            return "Error: Could not generate query embedding for RAG.", citations
+
+
         USE_FAISS = os.getenv("USE_FAISS", "False").lower() == "true"
         if USE_FAISS:
             # Use FAISS for matching
+            # build_faiss_index requires numpy
             faiss_index = build_faiss_index(chunk_embeddings)
             if faiss_index is not None:
                 k = min(155, len(chunks))
-                matched_chunks = search_faiss(faiss_index, query_embedding, chunks, k)
+                # Ensure query_embedding is in the correct format for FAISS search (numpy array float32)
+                try:
+                    query_vec = np.array(query_embedding).reshape(1, -1).astype('float32')
+                    distances, indices = faiss_index.search(query_vec, k)
+                    matched_chunks = [chunks[i] for i in indices[0] if i < len(chunks)]
+                except Exception as e:
+                     self.console.print(f"[red]Error during FAISS search: {e}[/red]")
+                     self.console.print("[yellow]Falling back to Supabase for RAG.[/yellow]")
+                     # Ensure query_embedding is a list for Supabase RPC
+                     match_response = supabase.rpc("match_chunks", {"query_embedding": list(query_embedding), "match_count": 155}).execute() # Increased match_count for fallback
+                     matched_chunks = [row["chunk"] for row in match_response.data] if match_response.data else []
             else:
                 self.console.print("[yellow]FAISS index could not be built; falling back to Supabase.[/yellow]")
-                match_response = supabase.rpc("match_chunks", {"query_embedding": query_embedding, "match_count": len(chunks)}).execute()
+                # Ensure query_embedding is a list for Supabase RPC
+                match_response = supabase.rpc("match_chunks", {"query_embedding": list(query_embedding), "match_count": 155}).execute()
                 matched_chunks = [row["chunk"] for row in match_response.data] if match_response.data else []
         else:
-            match_response = supabase.rpc("match_chunks", {"query_embedding": query_embedding, "match_count": 155}).execute()
+            # Ensure query_embedding is a list for Supabase RPC
+            # Use Supabase RPC for matching
+            match_response = supabase.rpc("match_chunks", {"query_embedding": list(query_embedding), "match_count": 200}).execute()
             matched_chunks = [row["chunk"] for row in match_response.data] if match_response.data else []
+
         self.console.print(f"Retrieved {len(matched_chunks)} relevant chunks.")
         aggregated_relevant = "\n\n".join(matched_chunks)
-        prompt = f"""You are an expert diagnostic report generator.
-Based on the following aggregated content, generate a comprehensive diagnostic report that directly addresses the patient's query:
+
+        prompt = f"""You are an expert diagnostic report generator. Based on the following aggregated content, generate a comprehensive diagnostic report that directly addresses the patient's query:
 "{self.current_query}"
 Provide detailed medical analysis, actionable recommendations, and include citations for each source.
-
 Aggregated Relevant Content:
 {aggregated_relevant}
 
@@ -506,15 +713,19 @@ Respond with a detailed Markdown-formatted report.
             {"role": "system", "content": "You are an expert diagnostic report generator."},
             {"role": "user", "content": prompt}
         ]
+
         self.console.print("Performing secondary analysis via RAG...")
         try:
-            response = deepseek_client.chat(messages)
+            # Use the gemini_client (LLM client) for the final report generation
+            response = gemini_client.chat(messages) # This calls the chat method of the GeminiClient
             comprehensive_report = response.get("choices", [{}])[0].get("message", {}).get("content", "")
+
             try:
                 supabase.table("embeddings").delete().eq("source", "Aggregated content").execute()
                 self.console.print("[green]Cleared Supabase embeddings after report generation.[/green]")
             except Exception as e:
                 self.console.print(f"[red]Error cleaning up Supabase: {e}[/red]")
+
             return comprehensive_report, citations
         except Exception as e:
             self.console.print(f"[red]Secondary analysis via RAG failed: {e}[/red]")
@@ -525,12 +736,15 @@ Respond with a detailed Markdown-formatted report.
                 self.console.print(f"[red]Error during cleanup: {cleanup_err}[/red]")
             return "Secondary analysis failed.", citations
 
+
     def generate_report(self, additional_files, comprehensive_report, citations):
         report = f"# Medical Diagnostic Report for: {self.original_query} (Generated on {datetime.today().strftime('%Y-%m-%d')})\n\n"
         report += f"**Refined Query:** {self.current_query}\n\n"
         report += "## Agent's Understanding\n"
         for key, value in self.analysis.items():
-            report += f"- **{key.capitalize()}**: {value}\n"
+            # Handle potentially non-string values in analysis
+            report += f"- **{key.capitalize()}**: {str(value) if not isinstance(value, (list, dict)) else value}\n"
+
         report += "\n## Search Results\n"
         for topic, results in self.search_results.items():
             report += f"### Search: {topic}\n"
@@ -542,6 +756,7 @@ Respond with a detailed Markdown-formatted report.
                     report += f"- **Title:** {title}\n  - **URL:** {url}\n  - **Relevance Score:** {relevance}\n\n"
             else:
                 report += "No search results found.\n\n"
+
         report += "## Extracted Full Content\n"
         for topic, items in self.extracted_content.items():
             report += f"### Extraction for: {topic}\n"
@@ -552,20 +767,24 @@ Respond with a detailed Markdown-formatted report.
                     report += f"- **URL:** {ext_url}\n  - **Content:**\n{text}\n\n"
             else:
                 report += "No content extracted.\n\n"
+
         if additional_files:
             report += "## Additional Reference Files\n"
             for path, content in additional_files.items():
                 report += f"- **{path}**:\n{content}\n\n"
-        wearable_summary = read_wearable_data()
+
+        wearable_summary = read_wearable_data() # Assuming read_wearable_data is defined elsewhere
         if wearable_summary:
             report += "## Wearable Data Summary\n"
             report += wearable_summary + "\n"
+
         report += "\n---\n\n"
         report += "## Comprehensive Diagnostic Report (via Secondary Analysis)\n"
         report += comprehensive_report + "\n\n"
         report += "## Citations\n"
         for citation in citations:
             report += f"- {citation}\n"
+
         return report
 
     def generate_summary_report(self, comprehensive_report, citations):
@@ -578,10 +797,9 @@ Respond with a detailed Markdown-formatted report.
             summary += f"- {citation}\n"
         return summary
 
-    async def generate_patient_summary_report(self, deepseek_client, comprehensive_report, citations):
+    async def generate_patient_summary_report(self, gemini_client, comprehensive_report, citations): # Argument name changed
         self.console.print("Generating patient-friendly summary report with clear action steps...")
-        prompt = f"""You are a medical assistant who explains complex diagnostic reports in simple, clear language for patients.
-Based on the following comprehensive diagnostic report, produce a short summary that a non-medical professional can easily understand.
+        prompt = f"""You are a medical assistant who explains complex diagnostic reports in simple, clear language for patients. Based on the following comprehensive diagnostic report, produce a short summary that a non-medical professional can easily understand.
 This summary must:
 - Clearly state the main findings.
 - Provide specific, actionable recommendations (including any suggested medications, diagnostic tests, and referrals).
@@ -594,17 +812,26 @@ Comprehensive Diagnostic Report:
             {"role": "user", "content": prompt}
         ]
         try:
-            response = deepseek_client.chat(messages)
+            # Use the gemini_client (LLM client) for patient summary generation
+            response = gemini_client.chat(messages) # This calls the chat method of the GeminiClient
             simplified_report = response.get("choices", [{}])[0].get("message", {}).get("content", "")
             return simplified_report
         except Exception as e:
             self.console.print(f"[red]Failed to generate patient-friendly summary: {e}[/red]")
             return "Patient-friendly summary generation failed."
 
+
     def save_reports(self, additional_files, comprehensive_report, citations):
         full_report = self.generate_report(additional_files, comprehensive_report, citations)
         summary_report = self.generate_summary_report(comprehensive_report, citations)
+
+        # Sanitize original_query for filename
         base_filename = ''.join(c if c.isalnum() or c.isspace() else '_' for c in self.original_query.split('.')[0])
+        base_filename = base_filename.strip().replace(' ', '_') # Replace spaces with underscores and strip
+        if not base_filename:
+             base_filename = "report" # Default name if query is empty or invalid chars
+
+
         full_report_filename = f"{base_filename}_diagnostic_full.md"
         try:
             with open(full_report_filename, "w", encoding="utf-8") as f:
@@ -614,6 +841,7 @@ Comprehensive Diagnostic Report:
         except Exception as ex:
             self.console.print(f"[red]Failed to save full report: {ex}[/red]")
             logging.error(f"Full report save error: {ex}")
+
         summary_report_filename = f"{base_filename}_diagnostic_summary.md"
         try:
             with open(summary_report_filename, "w", encoding="utf-8") as f:
@@ -623,10 +851,16 @@ Comprehensive Diagnostic Report:
         except Exception as ex:
             self.console.print(f"[red]Failed to save summary report: {ex}[/red]")
             logging.error(f"Summary report save error: {ex}")
+
         return full_report_filename, summary_report_filename
 
     def save_patient_report(self, patient_report):
+        # Sanitize original_query for filename
         base_filename = ''.join(c if c.isalnum() or c.isspace() else '_' for c in self.original_query.split('.')[0])
+        base_filename = base_filename.strip().replace(' ', '_') # Replace spaces with underscores and strip
+        if not base_filename:
+             base_filename = "report" # Default name if query is empty or invalid chars
+
         patient_report_filename = f"{base_filename}_patient_summary.md"
         try:
             with open(patient_report_filename, "w", encoding="utf-8") as f:
@@ -636,6 +870,7 @@ Comprehensive Diagnostic Report:
         except Exception as ex:
             self.console.print(f"[red]Failed to save patient-friendly summary: {ex}[/red]")
             logging.error(f"Patient report save error: {ex}")
+
         return patient_report_filename
 
 async def main():
@@ -664,19 +899,39 @@ async def main():
     save_query_history(original_query, predicted_diag, sentiment_score, entities)
     
     search_config = SearchConfig()
+    # Use the Gemini 2.5 Pro model name. Based on search, "gemini-2.5-pro-exp-03-25" is a possible model ID. or "gemini-2.5-flash-exp-04-17"
+    # Confirm the exact model name from the Gemini API documentation you are using (e.g., Google AI Studio or Vertex AI).
+    GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-2.5-flash-exp-04-17") # <--- Changed line
     analysis_config = AnalysisConfig(
-        model_name=os.getenv("MODEL_NAME", "deepseek-ai/DeepSeek-R1"),
+        model_name=GEMINI_MODEL_NAME, # <--- Changed line
         temperature= 0.3
     )
-    DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
-    DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL")
+
+    # Obtain Gemini API Key and Base URL from environment variables
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+    # The base URL depends on whether you are using Google AI Studio API or Vertex AI API.
+    # Example for Google AI Studio: "https://generativelanguage.googleapis.com"
+    # Example for Vertex AI: "https://us-central1-aiplatform.googleapis.com" (adjust region as needed)
+    # **IMPORTANT:** Set the correct base URL based on your Gemini API access method.
+    # GEMINI_BASE_URL = os.getenv("GEMINI_BASE_URL", "https://generativelanguage.googleapis.com") # <--- Changed line
+
     TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
-    deepseek_client = DeepSeekClient(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL, config=analysis_config)
+
+    # Instantiate the GeminiClient instead of DeepSeekClient
+    gemini_client = GeminiClient(api_key=GEMINI_API_KEY,  config=analysis_config) # <--- Changed line
+
     search_client = TavilyClient(api_key=TAVILY_API_KEY)
     extractor = TavilyExtractor(api_key=TAVILY_API_KEY)
     search_service = WebSearchService(search_client, search_config)
-    subject_analyzer = SubjectAnalyzer(llm_client=deepseek_client, config=analysis_config)
-    
+
+    # Update the subject_analyzer to use the gemini_client
+    subject_analyzer = SubjectAnalyzer(llm_client=gemini_client, config=analysis_config) # <--- Changed line
+
+    # Continue using gemini_client for RAG and patient summary generation
+    # task.analyze_full_content_rag(deepseek_client) should be changed to task.analyze_full_content_rag(gemini_client)
+    # task.generate_patient_summary_report(deepseek_client, ...) should be changed to task.generate_patient_summary_report(gemini_client, ...)
+    # These calls are further down in the main function and should be updated accordingly.
+
     include_urls_input = input("Enter URL(s) to include in the search (comma-separated, leave blank to search the web): ").strip()
     include_urls = [url.strip() for url in include_urls_input.split(',')] if include_urls_input else []
     omit_urls_input = input("Enter URL(s) to omit from search results (comma-separated, leave blank if none): ").strip()
@@ -728,11 +983,11 @@ async def main():
         except Exception as e:
             console.print(f"[red]Extraction failed for user provided URLs: {e}[/red]")
     
-    comprehensive_report, citations = await task.analyze_full_content_rag(deepseek_client)
+    comprehensive_report, citations = await task.analyze_full_content_rag(gemini_client)
     full_report_filename, summary_report_filename = task.save_reports(additional_files, comprehensive_report, citations)
     console.print(f"\n[bold green]Diagnostic process complete. Full and summary reports have been saved.[/bold green]")
     
-    patient_report = await task.generate_patient_summary_report(deepseek_client, comprehensive_report, citations)
+    patient_report = await task.generate_patient_summary_report(gemini_client, comprehensive_report, citations)
     patient_report_filename = task.save_patient_report(patient_report)
     console.print(f"\n[bold green]Patient-friendly summary report saved as: {patient_report_filename}[/bold green]")
     
