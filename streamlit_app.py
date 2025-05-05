@@ -397,13 +397,18 @@ def visualize_query_trends():
 
 def build_faiss_index(embeddings):
     """Builds a FAISS index."""
-    # Ensure embeddings is a list of lists/arrays and not empty
-    if not embeddings or not isinstance(embeddings, list) or not all(isinstance(emb, (np.ndarray, list)) for emb in embeddings):
-        logger.warning("Invalid or empty embeddings provided for FAISS index.")
+    # Filter out None embeddings and ensure they are in a suitable format
+    valid_embeddings = [
+        np.array(emb).astype('float32') for emb in embeddings
+        if emb is not None and isinstance(emb, (np.ndarray, list)) and len(emb) > 0
+    ]
+
+    if not valid_embeddings:
+        logger.warning("No valid embeddings provided for FAISS index.")
         return None
     try:
-        # Convert list of lists/arrays to a numpy array of float32
-        embeddings_array = np.array(embeddings).astype('float32')
+        # Stack valid embeddings into a single numpy array
+        embeddings_array = np.vstack(valid_embeddings)
 
         # Ensure the array is 2D
         if embeddings_array.ndim != 2:
@@ -425,11 +430,13 @@ def search_faiss(index, query_embedding, k):
     """Searches the FAISS index."""
     if index is None:
         logger.warning("FAISS index is None, cannot search.")
-        return None, None
-    # Ensure query_embedding is a list or array and convert to float32 numpy array
-    if not isinstance(query_embedding, (np.ndarray, list)):
-         logger.error("Invalid query embedding format for FAISS search.")
-         return None, None
+        return np.array([]), np.array([]) # Return empty arrays on failure
+
+    # Ensure query_embedding is in a suitable format and convert to float32 numpy array
+    if not isinstance(query_embedding, (np.ndarray, list)) or len(query_embedding) == 0:
+         logger.error("Invalid or empty query embedding format for FAISS search.")
+         return np.array([]), np.array([]) # Return empty arrays on failure
+
     try:
         query_vec = np.array(query_embedding).reshape(1, -1).astype('float32')
         # Ensure k is not greater than the number of vectors in the index
@@ -444,7 +451,7 @@ def search_faiss(index, query_embedding, k):
     except Exception as e:
         st.error(f"Error searching FAISS index: {e}")
         logger.error(f"FAISS search failed: {e}\n{traceback.format_exc()}")
-        return None, None
+        return np.array([]), np.array([]) # Return empty arrays on failure
 
 
 def read_wearable_data(uploaded_file):
@@ -754,8 +761,12 @@ async def run_analysis_pipeline(
                         try:
                             # google-generativeai embed_content can take a list of strings
                             result = await genai.embed_content_async(model=model_name, content=texts, task_type="RETRIEVAL_DOCUMENT")
-                            # The structure of the response is a list of embeddings
-                            return result['embeddings'] # Access the 'embeddings' key
+                            # Safely access embeddings, check if result and 'embeddings' key exist
+                            if result and 'embeddings' in result and result['embeddings']:
+                                return result['embeddings']
+                            else:
+                                logger.warning(f"Embedding batch returned no embeddings or unexpected structure.")
+                                return [None] * len(texts) # Return Nones for this batch
                         except Exception as e:
                             logger.error(f"Embedding batch failed: {e}\n{traceback.format_exc()}")
                             # Return a list of Nones for this batch to indicate failure
@@ -805,7 +816,11 @@ async def run_analysis_pipeline(
                         try:
                             # Get embedding for the query
                             query_embedding_response = await genai.embed_content_async(model=GOOGLE_EMBEDDING_MODEL, content=current_query, task_type="RETRIEVAL_QUERY")
-                            query_embedding = query_embedding_response['embeddings'][0] # Get the first embedding
+                             # Safely access the query embedding
+                            if query_embedding_response and 'embeddings' in query_embedding_response and query_embedding_response['embeddings']:
+                                query_embedding = query_embedding_response['embeddings'][0] # Get the first embedding
+                            else:
+                                raise ValueError("Query embedding response was empty or in unexpected format.")
 
                         except Exception as e:
                             logger.error(f"Failed to embed query for RAG: {e}\n{traceback.format_exc()}")
@@ -826,7 +841,7 @@ async def run_analysis_pipeline(
                                 if faiss_index:
                                     try:
                                         distances, indices = await loop.run_in_executor(None, search_faiss, faiss_index, query_embedding, k)
-                                        if indices is not None:
+                                        if indices is not None and indices.size > 0:
                                             # Retrieve chunks using indices from the valid_chunks list
                                             matched_chunks = [valid_chunks[i] for i in indices if 0 <= i < len(valid_chunks)]
                                             rag_status.info(f"FAISS matching found {len(matched_chunks)} relevant chunks.")
@@ -1022,7 +1037,7 @@ for key, value in default_state.items():
 # --- Train Classifier (if survey data is uploaded) ---
 survey_df = None
 if uploaded_survey_file:
-    file_details = (uploaded_survey_file.name, uploaded_survey_file.size)
+    file_details = (uploaded_survey_file.name, uploaded_wearable_file.size) # Corrected to use uploaded_survey_file.size
     # Check if a new file has been uploaded or a different file is selected
     if 'last_survey_file' not in st.session_state or st.session_state.last_survey_file != file_details:
         st.session_state.classifier_trained = False
