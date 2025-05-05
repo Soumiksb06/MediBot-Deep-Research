@@ -13,20 +13,10 @@ import base64
 import csv
 
 import nltk
-# Check if vader_lexicon is already downloaded
+# Check if vader_lexicon is already downloaded, download if not found
 try:
     nltk.data.find('sentiment/vader_lexicon.zip')
-except nltk.downloader.DownloadError:
-     # Fallback/alternative check for missing data, handle LookupError
-     # This can still be problematic if DownloadError is truly missing.
-     # A better approach is below using LookupError
-     try:
-         nltk.download('vader_lexicon', quiet=True)
-     except Exception as e:
-         st.warning(f"Could not download NLTK vader_lexicon: {e}")
-
 except LookupError:
-    # If LookupError is raised, the data is not found, so download it
     st.spinner("Downloading NLTK vader_lexicon...")
     try:
         nltk.download('vader_lexicon', quiet=True)
@@ -34,8 +24,8 @@ except LookupError:
     except Exception as e:
         st.warning(f"Could not download NLTK vader_lexicon: {e}")
 
-# You might also want to add a similar check for the spaCy model download
-# which is handled within the extract_medical_entities function in the current script.
+# Ensure spaCy model is downloaded (handled within extract_medical_entities)
+# You can add a similar try-except block here if you want to handle the
 
 import spacy
 try:
