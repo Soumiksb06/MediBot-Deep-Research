@@ -19,7 +19,6 @@ python-docx
 pandas
 rich
 python-dotenv
-google-generativeai
 google-genai
 supabase
 scikit-learn
