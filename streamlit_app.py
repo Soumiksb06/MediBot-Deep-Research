@@ -1254,10 +1254,10 @@ with st.sidebar:
     st.header("Configuration")
     query = st.text_area("1. Enter Patient Symptoms/Issue:", height=150, key="query_input", help="Describe the primary health concern or symptoms.")
     st.subheader("Web Search Options")
-    # Corrected height to meet minimum requirement (68px) - Reverted height to 50 based on previous uploads
-    include_urls_str = st.text_area("Include Specific URLs (one per line, optional):", height=50, key="include_urls", help="Force the agent to use only these URLs for information.")
-    # Corrected height to meet minimum requirement (68px) - Reverted height to 50 based on previous uploads
-    omit_urls_str = st.text_area("Omit URLs Containing (one per line, optional):", height=50, key="omit_urls", help="Exclude search results from URLs containing these strings (e.g., 'forum').")
+    # Corrected height to meet minimum requirement (68px)
+    include_urls_str = st.text_area("Include Specific URLs (one per line, optional):", height=150, key="include_urls", help="Force the agent to use only these URLs for information.") # Corrected line
+    # Corrected height to meet minimum requirement (68px)
+    omit_urls_str = st.text_area("Omit URLs Containing (one per line, optional):", height=150, key="omit_urls", help="Exclude search results from URLs containing these strings (e.g., 'forum').") # Corrected line
     search_depth = st.selectbox("Search Depth:", ["basic", "advanced"], index=1, key="search_depth", help="'basic' is faster, 'advanced' is more thorough.")
     search_breadth = st.number_input("Search Breadth (results per query):", min_value=3, max_value=20, value=7, key="search_breadth", help="Number of search results to retrieve for each identified topic.")
     st.subheader("Reference Files (Optional)")
