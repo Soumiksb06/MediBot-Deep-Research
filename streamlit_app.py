@@ -9,14 +9,16 @@ Features:
 - RAG with Supabase/FAISS using Gemini Embeddings.
 - Comprehensive Diagnostic Reporting (Full, Summary, Patient-Friendly) using Gemini.
 - Sentiment Analysis and NER using Gemini (replaces NLTK/spaCy).
-- ML-based Diagnosis Prediction (scikit-learn) & Explanation (SHAP) - Requires survey data upload.
+- ML-based Diagnosis Prediction (scikit-learn) & Explanation (SHAP) - Requires survey data upload (now optional).
+- Gemini-based Potential Diagnosis Suggestion (less rigid prediction).
 - Visualization of Query Trends (Matplotlib/Seaborn).
 - Optional Wearable Data Integration (CSV upload).
 - Local File Reference Upload (PDF, DOCX, CSV, Excel, TXT).
 - Asynchronous operations handled within Streamlit using asyncio.run().
 - API Key management via st.secrets or environment variables.
 
-Modified to display all analysis results persistently using tabs.
+Modified to display all analysis results persistently using tabs
+ and add Gemini-based potential diagnosis suggestions.
 """
 
 import os
@@ -84,7 +86,7 @@ GEMINI_API_KEY = st.secrets.get("api_keys", {}).get("GEMINI_API_KEY") or os.gete
 TAVILY_API_KEY = st.secrets.get("api_keys", {}).get("TAVILY_API_KEY") or os.getenv("TAVILY_API_KEY")
 SUPABASE_URL = st.secrets.get("supabase", {}).get("SUPABASE_URL") or os.getenv("SUPABASE_URL")
 SUPABASE_KEY = st.secrets.get("supabase", {}).get("SUPABASE_KEY") or os.getenv("SUPABASE_KEY")
-GEMINI_MODEL_NAME = st.secrets.get("models", {}).get("GEMINI_MODEL_NAME") or os.getenv("GEMINI_MODEL_NAME", "gemini-2.5-flash-exp-04-17")
+GEMINI_MODEL_NAME = st.secrets.get("models", {}).get("GEMINI_MODEL_NAME") or os.getenv("GEMINI_MODEL_NAME", "gemini-1.5-flash-latest")
 GOOGLE_EMBEDDING_MODEL = st.secrets.get("models", {}).get("GOOGLE_EMBEDDING_MODEL") or os.getenv("GOOGLE_EMBEDDING_MODEL", "text-embedding-004")
 
 if not all([GEMINI_API_KEY, TAVILY_API_KEY, SUPABASE_URL, SUPABASE_KEY]):
@@ -191,6 +193,43 @@ Medical Entities:
         logger.error(f"Gemini entity extraction failed: {e}\n{traceback.format_exc()}")
         return f"Error during entity extraction: {e}"
 
+# --- New Function for Gemini-based Prediction ---
+async def predict_diagnoses_gemini(query, relevant_context, client):
+    """Suggests potential diagnoses using Gemini based on query and context."""
+    if not relevant_context.strip():
+        context_section = "No additional relevant context was found from web search or files."
+    else:
+        context_section = f"""Relevant Context:
+---
+{relevant_context}
+---"""
+
+    prompt = f"""As a medical AI assistant, analyze the patient's query and the provided context to suggest a list of potential differential diagnoses.
+For each potential diagnosis, provide a very brief (1-2 sentences) justification based on the symptoms and context.
+State that this is not a definitive diagnosis and that professional medical evaluation is necessary.
+
+Patient Query: "{query}"
+
+{context_section}
+
+Suggested Potential Diagnoses:
+"""
+    try:
+        messages = [{"role": "user", "content": prompt}]
+        if asyncio.iscoroutinefunction(client.chat):
+            response_data = await client.chat(messages)
+        else:
+            loop = asyncio.get_running_loop()
+            response_data = await loop.run_in_executor(None, client.chat, messages)
+
+        gemini_prediction_text = response_data.get("choices", [{}])[0].get("message", {}).get("content", "Gemini diagnosis suggestion failed.")
+        return gemini_prediction_text
+    except Exception as e:
+        logger.error(f"Gemini diagnosis prediction failed: {e}\n{traceback.format_exc()}")
+        return f"Gemini diagnosis suggestion failed: {e}"
+# --- End New Function ---
+
+
 def extract_text_from_file(uploaded_file):
     """Extracts text from various uploaded file types with memory efficiency."""
     try:
@@ -251,8 +290,8 @@ def train_symptom_classifier(survey_data_df):
         logger.error(f"Classifier training failed: {e}\n{traceback.format_exc()}")
         return None, None
 
-def predict_diagnosis(query, vectorizer, model):
-    """Predicts diagnosis using the trained model."""
+def predict_diagnosis_classifier(query, vectorizer, model):
+    """Predicts diagnosis using the trained classifier model."""
     if not vectorizer or not model:
         return "Model not trained", {}
     try:
@@ -263,11 +302,11 @@ def predict_diagnosis(query, vectorizer, model):
         sorted_proba = dict(sorted(prob_dict.items(), key=lambda item: item[1], reverse=True))
         return pred, sorted_proba
     except Exception as e:
-        logger.error(f"Prediction failed: {e}\n{traceback.format_exc()}")
+        logger.error(f"Classifier prediction failed: {e}\n{traceback.format_exc()}")
         return f"Prediction error: {e}", {}
 
 def explain_diagnosis_shap(query, vectorizer, model, background_texts=None):
-    """Generates SHAP explanation for the prediction."""
+    """Generates SHAP explanation for the classifier prediction."""
     if not vectorizer or not model:
         return "Model not trained, cannot explain."
     try:
@@ -309,7 +348,7 @@ def explain_diagnosis_shap(query, vectorizer, model, background_texts=None):
         return f"SHAP explanation failed: {e}"
 
 
-def save_query_history(query, diagnosis, sentiment, entities):
+def save_query_history(query, classifier_diagnosis, gemini_prediction_summary, sentiment, entities):
     """Saves query details to a CSV file."""
     filename = "query_history.csv"
     file_exists = os.path.isfile(filename)
@@ -317,11 +356,13 @@ def save_query_history(query, diagnosis, sentiment, entities):
         with open(filename, mode="a", newline="", encoding="utf-8") as csvfile:
             writer = csv.writer(csvfile)
             if not file_exists or os.path.getsize(filename) == 0:
-                writer.writerow(["timestamp", "query", "predicted_diagnosis", "sentiment_summary", "entities_summary"])
-            # Limit the length of sentiment and entities summaries for CSV
+                writer.writerow(["timestamp", "query", "classifier_predicted_diagnosis", "gemini_prediction_summary", "sentiment_summary", "entities_summary"])
+            # Limit the length of summaries for CSV
+            gemini_summary_short = gemini_prediction_summary.split('\n')[0][:200] if gemini_prediction_summary else "N/A"
             sentiment_summary = str(sentiment).split('\n')[0][:200] if sentiment else "N/A"
             entities_summary = str(entities).split('\n')[0][:200] if entities else "N/A"
-            writer.writerow([datetime.now().isoformat(), query, diagnosis, sentiment_summary, entities_summary])
+
+            writer.writerow([datetime.now().isoformat(), query, classifier_diagnosis, gemini_summary_short, sentiment_summary, entities_summary])
         logger.info("Query history saved successfully.")
         return True
     except Exception as e:
@@ -347,20 +388,28 @@ def visualize_query_trends():
             st.info("No valid timestamps in query history.")
             return figs
         df = df.sort_values("timestamp")
-        if 'predicted_diagnosis' in df.columns:
-            valid_diagnoses = df[~df['predicted_diagnosis'].isin(["N/A - Model not trained", "Model not trained", "Prediction error", "N/A"])]['predicted_diagnosis']
+        if 'classifier_predicted_diagnosis' in df.columns:
+            valid_diagnoses = df[~df['classifier_predicted_diagnosis'].isin(["N/A - Model not trained", "Model not trained", "Prediction error", "N/A"])]['classifier_predicted_diagnosis']
             if not valid_diagnoses.empty:
                 # Handle potential non-string entries by converting to string
                 diag_counts = valid_diagnoses.astype(str).value_counts().nlargest(10)
                 if not diag_counts.empty:
                     fig_diag, ax_diag = plt.subplots(figsize=(8, 5))
                     sns.barplot(x=diag_counts.index, y=diag_counts.values, ax=ax_diag, palette="viridis")
-                    ax_diag.set_title("Top 10 Predicted Diagnoses")
+                    ax_diag.set_title("Top 10 Classifier Predicted Diagnoses")
                     ax_diag.set_xlabel("Diagnosis")
                     ax_diag.set_ylabel("Count")
                     plt.xticks(rotation=45, ha='right')
                     plt.tight_layout()
-                    figs['diagnosis_frequency'] = fig_diag
+                    figs['classifier_diagnosis_frequency'] = fig_diag
+
+        # Visualize Gemini prediction summaries (could be tricky depending on output format)
+        # This part might need refinement based on how Gemini output is structured
+        # if 'gemini_prediction_summary' in df.columns:
+        #     # Simple word count or topic extraction could be done here
+        #     # For now, skipping complex text analysis visualization for summaries
+        #     pass
+
         if 'entities_summary' in df.columns:
             entity_list = []
             # Process entities_summary column, handling potential non-string values
@@ -381,7 +430,7 @@ def visualize_query_trends():
                 if entity_counts:
                     labels, sizes = zip(*entity_counts)
                     fig_ent, ax_ent = plt.subplots(figsize=(8, 8))
-                    wedges, texts, autotexts = ax_ent.pie(sizes, autopct="%1.1f%%", startangle=140, pctdistance=0.85)
+                    wedges, texts, autotexts = ax_ent.pie(sizes, labels=labels, autopct="%1.1f%%", startangle=140, pctdistance=0.85)
                     ax_ent.legend(wedges, labels, title="Entities", loc="center left", bbox_to_anchor=(1, 0, 0.5, 1))
                     plt.setp(autotexts, size=8, weight="bold")
                     ax_ent.set_title("Top 15 Medical Entities")
@@ -516,8 +565,9 @@ async def run_analysis_pipeline(
         'extracted_content': {}, # Store full extracted content here
         'additional_files_content': additional_files_content, # Store content from uploaded files
         'wearable_data_summary': wearable_data_summary, # Store wearable data summary
-        'diagnosis_prediction': {"diagnosis": "N/A", "probabilities": {}},
-        'prediction_explanation': "N/A"
+        'classifier_prediction': {"diagnosis": "N/A", "probabilities": {}}, # Classifier prediction results
+        'classifier_explanation': "N/A", # Classifier explanation
+        'gemini_potential_diagnoses': "Gemini diagnosis suggestion not available." # Gemini based prediction
     }
     current_date = datetime.today().strftime("%Y-%m-%d")
     current_query = original_query
@@ -717,6 +767,13 @@ async def run_analysis_pipeline(
         progress_bar.progress(85, text="RAG skipped.")
         comprehensive_report = "No relevant information found from search or provided files."
         citations = list(citations_map.values()) # Still include provided URLs/files as citations even if content wasn't used in RAG
+        # --- Gemini-based Prediction even without RAG content ---
+        st.markdown("### Potential Diagnoses (via Gemini)")
+        gemini_prediction_status = st.empty()
+        gemini_prediction_status.info("Asking Gemini for potential diagnoses (no RAG context)...")
+        analysis_results['gemini_potential_diagnoses'] = await predict_diagnoses_gemini(current_query, "", gemini_client_instance)
+        gemini_prediction_status.success("Gemini diagnosis suggestion complete.")
+
 
     else:
         rag_status.info("Starting RAG pipeline...")
@@ -743,6 +800,14 @@ async def run_analysis_pipeline(
                     progress_bar.progress(85, text="RAG skipped.")
                     comprehensive_report = "Could not process content for RAG."
                     citations = list(citations_map.values())
+                    # --- Gemini-based Prediction even with chunking issues ---
+                    st.markdown("### Potential Diagnoses (via Gemini)")
+                    gemini_prediction_status = st.empty()
+                    gemini_prediction_status.info("Asking Gemini for potential diagnoses (no RAG context)...")
+                    analysis_results['gemini_potential_diagnoses'] = await predict_diagnoses_gemini(current_query, "", gemini_client_instance)
+                    gemini_prediction_status.success("Gemini diagnosis suggestion complete.")
+
+
                 else:
                     rag_status.info(f"Generated {len(all_chunks)} chunks for RAG.")
 
@@ -795,6 +860,14 @@ async def run_analysis_pipeline(
                         progress_bar.progress(85, text="RAG failed.")
                         comprehensive_report = "Embedding failed, could not perform RAG."
                         citations = list(citations_map.values())
+                        # --- Gemini-based Prediction even with embedding issues ---
+                        st.markdown("### Potential Diagnoses (via Gemini)")
+                        gemini_prediction_status = st.empty()
+                        gemini_prediction_status.info("Asking Gemini for potential diagnoses (no RAG context)...")
+                        analysis_results['gemini_potential_diagnoses'] = await predict_diagnoses_gemini(current_query, "", gemini_client_instance)
+                        gemini_prediction_status.success("Gemini diagnosis suggestion complete.")
+
+
                     else:
                         rag_status.info(f"Successfully embedded {len(all_embeddings)} chunks.")
                         progress_bar.progress(75, text="Matching relevant content...")
@@ -814,6 +887,13 @@ async def run_analysis_pipeline(
                             progress_bar.progress(85, text="RAG failed.")
                             comprehensive_report = "Failed to embed query, could not perform RAG."
                             citations = list(citations_map.values())
+                            # --- Gemini-based Prediction with query embedding issues ---
+                            st.markdown("### Potential Diagnoses (via Gemini)")
+                            gemini_prediction_status = st.empty()
+                            gemini_prediction_status.info("Asking Gemini for potential diagnoses (no RAG context)...")
+                            analysis_results['gemini_potential_diagnoses'] = await predict_diagnoses_gemini(current_query, "", gemini_client_instance)
+                            gemini_prediction_status.success("Gemini diagnosis suggestion complete.")
+
 
                         if query_embedding is not None:
                             k = min(20, len(valid_chunks)) # Retrieve top N relevant chunks
@@ -867,6 +947,13 @@ async def run_analysis_pipeline(
                                 rag_status.warning("No relevant content chunks found after matching.")
                                 comprehensive_report = "No relevant information found from search or provided files."
                                 citations = list(citations_map.values())
+                                # --- Gemini-based Prediction with matching issues ---
+                                st.markdown("### Potential Diagnoses (via Gemini)")
+                                gemini_prediction_status = st.empty()
+                                gemini_prediction_status.info("Asking Gemini for potential diagnoses (no RAG context)...")
+                                analysis_results['gemini_potential_diagnoses'] = await predict_diagnoses_gemini(current_query, "", gemini_client_instance)
+                                gemini_prediction_status.success("Gemini diagnosis suggestion complete.")
+
                             else:
                                 # --- Synthesis ---
                                 rag_status.info(f"Synthesizing report from {len(matched_chunks)} relevant chunks...")
@@ -913,11 +1000,25 @@ Instructions:
                                     citations = final_citations # Assign the generated citations
                                     rag_status.success("Comprehensive report synthesized.")
 
+                                    # --- Gemini-based Prediction with RAG context ---
+                                    st.markdown("### Potential Diagnoses (via Gemini)")
+                                    gemini_prediction_status = st.empty()
+                                    gemini_prediction_status.info("Asking Gemini for potential diagnoses based on RAG context...")
+                                    analysis_results['gemini_potential_diagnoses'] = await predict_diagnoses_gemini(current_query, aggregated_relevant_content, gemini_client_instance)
+                                    gemini_prediction_status.success("Gemini diagnosis suggestion complete.")
+
+
                                 except Exception as e:
                                     logger.error(f"Comprehensive report synthesis failed: {e}\n{traceback.format_exc()}")
                                     rag_status.error(f"Comprehensive report synthesis failed: {e}")
                                     comprehensive_report = f"Comprehensive report synthesis failed: {e}"
                                     citations = final_citations # Still include potential citations
+                                    # --- Gemini-based Prediction on synthesis failure ---
+                                    st.markdown("### Potential Diagnoses (via Gemini)")
+                                    gemini_prediction_status = st.empty()
+                                    gemini_prediction_status.info("Asking Gemini for potential diagnoses (RAG synthesis failed)...")
+                                    analysis_results['gemini_potential_diagnoses'] = await predict_diagnoses_gemini(current_query, aggregated_relevant_content, gemini_client_instance)
+                                    gemini_prediction_status.success("Gemini diagnosis suggestion complete.")
 
 
             except Exception as e:
@@ -925,6 +1026,12 @@ Instructions:
                 rag_status.error(f"RAG pipeline error: {e}")
                 comprehensive_report = f"RAG pipeline failed: {e}"
                 citations = list(citations_map.values())
+                # --- Gemini-based Prediction on RAG pipeline failure ---
+                st.markdown("### Potential Diagnoses (via Gemini)")
+                gemini_prediction_status = st.empty()
+                gemini_prediction_status.info("Asking Gemini for potential diagnoses (RAG pipeline failed)...")
+                analysis_results['gemini_potential_diagnoses'] = await predict_diagnoses_gemini(current_query, full_content_for_rag, gemini_client_instance) # Pass whatever content was aggregated
+                gemini_prediction_status.success("Gemini diagnosis suggestion complete.")
 
 
     analysis_results['comprehensive_report'] = comprehensive_report
@@ -995,7 +1102,7 @@ with st.sidebar:
     st.subheader("Reference Files")
     uploaded_files = st.file_uploader("Upload Files (PDF, DOCX, CSV, XLSX, TXT):", accept_multiple_files=True, type=['pdf', 'docx', 'csv', 'xlsx', 'xls', 'txt'], key="file_uploader")
     uploaded_wearable_file = st.file_uploader("Wearable Data CSV:", accept_multiple_files=False, type=['csv'], key="wearable_uploader")
-    uploaded_survey_file = st.file_uploader("Survey Data CSV:", accept_multiple_files=False, type=['csv'], key="survey_uploader")
+    uploaded_survey_file = st.file_uploader("Survey Data CSV (for optional classifier):", accept_multiple_files=False, type=['csv'], key="survey_uploader") # Clarified label
     st.subheader("Advanced Options")
     use_faiss = st.checkbox("Use FAISS for RAG (Recommended)", value=True, key="use_faiss") # Default to True and add recommendation
     st.divider()
@@ -1013,13 +1120,14 @@ default_state = {
     'model': None,
     'background_texts_sample': None,
     'last_survey_file': None, # To track the uploaded survey file and prevent re-training
-    'prediction_displayed': False # To ensure prediction is displayed only once per run
+    'classifier_prediction_displayed': False # To ensure classifier prediction is displayed only once per run button click
 }
 for key, value in default_state.items():
     if key not in st.session_state:
         st.session_state[key] = value
 
 # --- Train Classifier (if survey data is uploaded) ---
+# This block runs every time the script reruns, including on button click
 survey_df = None
 if uploaded_survey_file:
     file_details = (uploaded_survey_file.name, uploaded_survey_file.size)
@@ -1037,7 +1145,7 @@ if uploaded_survey_file:
             st.sidebar.success(f"Loaded survey data: {uploaded_survey_file.name}")
 
             # Train the classifier
-            with st.spinner("Training symptom classifier..."):
+            with st.sidebar.spinner("Training symptom classifier..."): # Use sidebar spinner for less obtrusiveness
                 vectorizer, model = train_symptom_classifier(survey_df)
 
             if vectorizer and model:
@@ -1059,7 +1167,7 @@ if uploaded_survey_file:
                     st.session_state.background_texts_sample = []
 
 
-                st.sidebar.success("Classifier trained successfully.")
+                st.sidebar.success("Classifier trained successfully. AI Prediction from survey data enabled.")
             else:
                 st.session_state.classifier_trained = False
                 st.sidebar.warning("Classifier training failed. Check data format.")
@@ -1085,7 +1193,7 @@ if submit_button and query:
     # Reset analysis state for a new run
     st.session_state.analysis_complete = False
     st.session_state.results = {}
-    st.session_state.prediction_displayed = False # Reset prediction display flag
+    st.session_state.classifier_prediction_displayed = False # Reset classifier prediction display flag
 
     # Process URLs and files
     include_urls_list = [url.strip() for url in include_urls_str.split('\n') if url.strip()]
@@ -1111,37 +1219,6 @@ if submit_button and query:
     if wearable_summary and "Error" not in wearable_summary:
         st.markdown("### Wearable Data Summary")
         st.text(wearable_summary) # Display the summary directly or in an expander
-        st.divider()
-
-
-    # --- Diagnosis Prediction (if classifier is trained) ---
-    if st.session_state.classifier_trained and not st.session_state.prediction_displayed:
-        st.markdown("### AI Diagnosis Prediction (from Survey Data)")
-        with st.spinner("Generating diagnosis prediction and explanation..."):
-            # Ensure query is a string
-            query_str = str(query)
-            pred_diag, pred_proba = predict_diagnosis(query_str, st.session_state.vectorizer, st.session_state.model)
-            explanation = explain_diagnosis_shap(query_str, st.session_state.vectorizer, st.session_state.model, st.session_state.background_texts_sample)
-
-        st.write(f"**Predicted Diagnosis:** {pred_diag}")
-        col1, col2 = st.columns(2)
-        with col1:
-            with st.expander("Prediction Probabilities", expanded=False):
-                # Display probabilities as a dictionary
-                st.json(pred_proba)
-        with col2:
-            with st.expander("Explanation (SHAP Analysis)", expanded=False):
-                 st.text(explanation)
-
-        # Store prediction results in session state.results before running the main pipeline
-        st.session_state.results['diagnosis_prediction'] = {"diagnosis": pred_diag, "probabilities": pred_proba}
-        st.session_state.results['prediction_explanation'] = explanation
-        st.session_state.prediction_displayed = True # Set flag to True
-
-        st.divider() # Add a divider after the prediction section
-    elif not st.session_state.classifier_trained and not st.session_state.prediction_displayed:
-        st.info("AI Diagnosis Prediction skipped. Upload survey data to enable this feature.")
-        st.session_state.prediction_displayed = True # Set flag even if skipped to prevent repeated message
         st.divider()
 
 
@@ -1171,10 +1248,21 @@ if submit_button and query:
         # Store the full analysis results in session state
         st.session_state.results.update(analysis_results) # Update with results from pipeline
 
+        # --- Perform and Store Classifier Prediction (if trained) ---
+        # Perform this here after the main pipeline as it uses the query
+        if st.session_state.classifier_trained:
+             query_str = str(query)
+             pred_diag, pred_proba = predict_diagnosis_classifier(query_str, st.session_state.vectorizer, st.session_state.model)
+             explanation = explain_diagnosis_shap(query_str, st.session_state.vectorizer, st.session_state.model, st.session_state.background_texts_sample)
+             st.session_state.results['classifier_prediction'] = {"diagnosis": pred_diag, "probabilities": pred_proba}
+             st.session_state.results['classifier_explanation'] = explanation
+             st.session_state.classifier_prediction_displayed = True # Mark as attempted
+
         # Save query history after successful pipeline completion
         save_query_history(
             query,
-            st.session_state.results.get('diagnosis_prediction', {}).get('diagnosis', 'N/A'), # Use prediction diagnosis if available
+            st.session_state.results.get('classifier_prediction', {}).get('diagnosis', 'N/A'), # Use classifier diagnosis if available
+            st.session_state.results.get('gemini_potential_diagnoses', 'N/A'), # Use Gemini prediction summary
             st.session_state.results.get('sentiment', 'N/A'),
             st.session_state.results.get('entities', 'N/A')
         )
@@ -1193,14 +1281,14 @@ if st.session_state.analysis_complete:
     st.header("Complete Analysis Results")
 
     # Use tabs to organize the results
-    tab_summary, tab_comprehensive, tab_preliminary, tab_subject, tab_search, tab_extracted, tab_prediction, tab_trends = st.tabs([
+    tab_summary, tab_comprehensive, tab_prediction, tab_preliminary, tab_subject, tab_search, tab_extracted, tab_trends = st.tabs([ # Reordered tabs
         "Patient Summary",
         "Comprehensive Report",
+        "AI Prediction", # Combined classifier and Gemini prediction here
         "Preliminary Analysis",
         "Subject Analysis",
         "Search Results",
         "Extracted Content",
-        "AI Prediction",
         "Query Trends"
     ])
 
@@ -1219,6 +1307,35 @@ if st.session_state.analysis_complete:
             st.markdown("#### Citations")
             for citation in st.session_state.results['citations']:
                 st.write(f"- {citation}")
+
+
+    with tab_prediction: # Combined prediction logic here
+        st.markdown("### AI Diagnosis Prediction & Suggestions")
+
+        # Display Gemini-based potential diagnoses (always attempted)
+        st.markdown("#### Potential Diagnoses (via Gemini)")
+        st.write(st.session_state.results.get('gemini_potential_diagnoses', 'Gemini diagnosis suggestion not available.'))
+        st.info("Gemini provides potential diagnoses based on its training and the current case information.")
+
+
+        # Display Classifier Prediction (only if trained and attempted)
+        st.markdown("#### Classifier Prediction (from Survey Data)")
+        if st.session_state.classifier_trained and st.session_state.classifier_prediction_displayed: # Check if trained AND attempted
+            prediction_results = st.session_state.results.get('classifier_prediction', {})
+            explanation = st.session_state.results.get('classifier_explanation', 'Explanation not available.')
+            if prediction_results and prediction_results.get('diagnosis') != 'N/A':
+                st.write(f"**Predicted Diagnosis:** {prediction_results.get('diagnosis', 'N/A')}")
+                col1, col2 = st.columns(2)
+                with col1:
+                    with st.expander("Prediction Probabilities", expanded=False):
+                        st.json(prediction_results.get('probabilities', {}))
+                with col2:
+                     with st.expander("Explanation (SHAP Analysis)", expanded=False):
+                        st.text(explanation)
+            else:
+                st.info("Classifier prediction could not be generated for this query.") # More specific message
+        elif not st.session_state.classifier_trained: # If not trained at all
+            st.info("Classifier prediction not available. Upload survey data to enable this feature.")
 
 
     with tab_preliminary:
@@ -1297,22 +1414,6 @@ if st.session_state.analysis_complete:
         if not extracted_content and not additional_files_content:
              st.info("No web content extracted and no additional files were processed.")
 
-
-    with tab_prediction:
-        st.markdown("### AI Diagnosis Prediction (from Survey Data)")
-        prediction_results = st.session_state.results.get('diagnosis_prediction', {})
-        explanation = st.session_state.results.get('prediction_explanation', 'Explanation not available.')
-        if prediction_results and prediction_results.get('diagnosis') != 'N/A':
-            st.write(f"**Predicted Diagnosis:** {prediction_results.get('diagnosis', 'N/A')}")
-            col1, col2 = st.columns(2)
-            with col1:
-                with st.expander("Prediction Probabilities", expanded=False):
-                    st.json(prediction_results.get('probabilities', {}))
-            with col2:
-                 with st.expander("Explanation (SHAP Analysis)", expanded=False):
-                    st.text(explanation)
-        else:
-            st.info("AI Diagnosis Prediction was not performed (no survey data uploaded or training failed).")
 
     with tab_trends:
         st.markdown("### Query Trends Visualizations")
