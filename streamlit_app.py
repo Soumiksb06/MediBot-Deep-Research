@@ -8,6 +8,7 @@ import json # Import json for parsing Gemini responses
 import matplotlib.pyplot as plt # Import matplotlib for visualizations
 import pandas as pd # Import pandas for data handling in visualizations
 from collections import Counter # Import Counter for entity distribution
+import sys
 
 # Configure logging (optional in Streamlit, but good for debugging)
 import logging
