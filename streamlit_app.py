@@ -907,5 +907,15 @@ if submit_button and query:
         st.error(f"Pipeline failed: {e}")
         logger.error(f"Pipeline error: {e}\n{traceback.format_exc()}")
 
+# Handle Analysis completion
 if st.session_state.analysis_complete:
-    st.div
+    st.divider()  # Adds a horizontal line to separate sections
+    # Display analysis results
+    st.markdown("### Comprehensive Report")
+    st.write(st.session_state.results.get('comprehensive_report', 'No report available.'))
+    st.markdown("### Patient-Friendly Summary")
+    st.write(st.session_state.results.get('patient_summary_report', 'No summary available.'))
+    if st.session_state.results.get('citations'):
+        st.markdown("### Citations")
+        for citation in st.session_state.results['citations']:
+            st.write(f"- {citation}")
