@@ -1284,7 +1284,8 @@ for key, value in default_state.items():
 # --- Train Classifier ---
 survey_df = None
 if uploaded_survey_file:
-    file_details = (uploaded_survey_file.name, uploaded_wearable_file.size) # Corrected: Should be survey_file.size
+    # Corrected line: Use uploaded_survey_file.size instead of uploaded_wearable_file.size
+    file_details = (uploaded_survey_file.name, uploaded_survey_file.size)
     if 'last_survey_file' not in st.session_state or st.session_state.last_survey_file != file_details:
         st.session_state.classifier_trained = False
         st.session_state.vectorizer = None
