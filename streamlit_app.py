@@ -1121,7 +1121,29 @@ async def run_analysis_pipeline(
                             rag_status.info(f"Synthesizing report from {len(matched_chunks)} relevant chunks...")
                             aggregated_relevant = "\n\n".join(matched_chunks)
                             citations = [f"{title}: {url_or_file}" for url_or_file, title in citations_map.items()]
-                            synthesis_prompt = f"""You are an expert diagnostic report generator... [rest of prompt as before] ... Respond with a detailed Markdown-formatted report. If no relevant information is found in the content to answer the query, state that clearly.
+                            synthesis_prompt = f"""You are an expert diagnostic report generator. Your task is to synthesize information from the provided context to create a comprehensive medical diagnostic report based on the patient's query.
+
+Patient Query: {current_query}
+Context (from web search and uploaded files):
+---
+{aggregated_relevant}
+---
+Instructions:
+1.  **Identify and Summarize Key Symptoms/Issues:** Extract the main symptoms and health issues mentioned in the patient query and supported by the context.
+2.  **Analyze Information from Context:** Synthesize the relevant information from the provided context. Discuss potential conditions, contributing factors, and relevant details based *only* on the context. Explicitly mention if the context provides conflicting information or is inconclusive on certain aspects.
+3.  **Address Temporal Context:** Incorporate any temporal information identified in the initial analysis if supported by the context (e.g., duration of symptoms, history).
+4.  **Consider Wearable Data:** If wearable data summary is provided, integrate its findings into the analysis where relevant (e.g., unusual heart rate patterns, activity levels).
+5.  **Formulate a Comprehensive Report:** Structure the output as a detailed medical report using Markdown. Include sections like:
+    -   Patient Query
+    -   Analysis based on Provided Information (Synthesized findings from context)
+    -   Relevant Wearable Data (If applicable)
+    -   Considerations/Limitations (Mention if information is scarce, conflicting, or if context is limited)
+    -   Disclaimer (State that this is for informational purposes and not a substitute for professional medical advice)
+6.  **Citations:** Implicitly refer to the sources by synthesizing the information. Explicit citation markers are not needed in the report body itself unless the context explicitly uses them. The separate citations list will be provided later.
+7.  **Professional Tone:** Maintain a professional, objective, and informative tone. Avoid making definitive diagnoses or recommendations for treatment.
+8.  **Handle Lack of Information:** If no relevant information is found in the content to answer the query adequately, state that clearly in the report (e.g., "The provided information does not contain sufficient detail to analyze the query regarding...").
+
+Respond with a detailed Markdown-formatted report. If no relevant information is found in the content to answer the query, state that clearly.
 """ # Truncated prompt for brevity - use full prompt from previous version
 
                             try:
@@ -1155,7 +1177,21 @@ async def run_analysis_pipeline(
         progress_bar.progress(90, text="Generating patient summary...")
         summary_status.info("Generating patient-friendly summary...")
         with st.spinner("Generating patient-friendly summary..."):
-            prompt = f"""You are a medical assistant... [rest of prompt as before] ... If the report indicates uncertainty or lack of information, reflect that in the summary.
+            prompt = f"""You are a medical assistant helping a patient understand a complex medical report. Your task is to take the provided comprehensive diagnostic report and summarize it in simple, easy-to-understand language for a layperson.
+
+Comprehensive Report:
+---
+{comprehensive_report}
+---
+Instructions:
+1.  **Simplify Medical Jargon:** Rephrase any complex medical terms or concepts in simple terms.
+2.  **Focus on Key Findings:** Highlight the main symptoms, potential issues discussed in the report, and relevant information from the context.
+3.  **Actionable Insights (if any):** If the report mentions any next steps or general advice (like "consult a doctor"), include this.
+4.  **Reassure and Inform:** Maintain a calm, reassuring, and informative tone.
+5.  **Maintain Disclaimer:** Reiterate the disclaimer that this summary is for informational purposes and not a substitute for professional medical advice.
+6.  **Handle Uncertainty:** If the report indicates uncertainty or lack of information, reflect that in the summary.
+
+Respond with a clear, concise, and patient-friendly summary using Markdown.
 """ # Truncated prompt for brevity
             try:
                 messages = [{"role": "user", "content": prompt}]
@@ -1197,9 +1233,9 @@ with st.sidebar:
     st.header("Configuration")
     query = st.text_area("1. Enter Patient Symptoms/Issue:", height=150, key="query_input", help="Describe the primary health concern or symptoms.")
     st.subheader("Web Search Options")
-    # Corrected line: Changed height from 50 to 150 for Include Specific URLs
+    # Corrected height to meet minimum requirement (68px)
     include_urls_str = st.text_area("Include Specific URLs (one per line, optional):", height=150, key="include_urls", help="Force the agent to use only these URLs for information.")
-    # Corrected line: Changed height from 50 to 150 for Omit URLs Containing
+    # Corrected height to meet minimum requirement (68px)
     omit_urls_str = st.text_area("Omit URLs Containing (one per line, optional):", height=150, key="omit_urls", help="Exclude search results from URLs containing these strings (e.g., 'forum').")
     search_depth = st.selectbox("Search Depth:", ["basic", "advanced"], index=1, key="search_depth", help="'basic' is faster, 'advanced' is more thorough.")
     search_breadth = st.number_input("Search Breadth (results per query):", min_value=3, max_value=20, value=7, key="search_breadth", help="Number of search results to retrieve for each identified topic.")
@@ -1211,7 +1247,7 @@ with st.sidebar:
     use_faiss = st.checkbox("Use FAISS for RAG Matching (if installed)", value=True, key="use_faiss", help="Use local FAISS index for faster similarity search during RAG. Falls back to Supabase if unchecked or FAISS fails.")
     st.divider()
     submit_button = st.button("Run Diagnostic Analysis", type="primary", key="submit_button", use_container_width=True)
-    
+
 # --- Main Area for Outputs ---
 st.header("Analysis Results")
 
@@ -1463,4 +1499,3 @@ elif submit_button and not query:
 # Add a footer or additional information
 st.divider()
 st.caption("Medical Diagnostic Agent v1.1 | For informational purposes only. Always consult a qualified healthcare professional for medical advice.")
-
