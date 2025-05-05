@@ -1,447 +1,274 @@
-
 import streamlit as st
+import google.generativeai as genai
 import os
 import asyncio
-from datetime import datetime
-from dotenv import load_dotenv
-from rich.console import Console
-import json # Import json for parsing Gemini responses
-
-# Configure logging (optional in Streamlit, but good for debugging)
 import logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s')
+from datetime import datetime
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from collections import Counter
+from dotenv import load_dotenv
+from web_agent.src.services.web_search import WebSearchService
+from web_agent.src.models.search_models import SearchConfig
+from subject_analyzer.src.services.tavily_client import TavilyClient
+from subject_analyzer.src.services.tavily_extractor import TavilyExtractor
+from subject_analyzer.src.services.subject_analyzer import SubjectAnalyzer
+from subject_analyzer.src.services.gemini_client import GeminiClient
+from subject_analyzer.src.models.analysis_models import AnalysisConfig
+from supabase import create_client, Client
+import numpy as np
+import faiss
 
-# Add project root to sys.path if needed - Adjust path based on your project structure
-# Assuming the structure where src contains the modules
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "."))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
+# Configure logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-# Import agent modules
-try:
-    from web_agent.src.services.web_search import WebSearchService
-    from web_agent.src.models.search_models import SearchConfig
-    from subject_analyzer.src.services.tavily_client import TavilyClient
-    from subject_analyzer.src.services.tavily_extractor import TavilyExtractor
-    from subject_analyzer.src.services.subject_analyzer import SubjectAnalyzer
-    from subject_analyzer.src.services.gemini_client import GeminiClient
-    from subject_analyzer.src.models.analysis_models import AnalysisConfig
-    # Import functions from med_agent_new.py (will be adapted or moved)
-    from med_agent_new import extract_text_from_file, train_symptom_classifier, predict_diagnosis, explain_diagnosis, save_query_history, visualize_query_trends, read_wearable_data, MedicalTask
-except ImportError as e:
-    st.error(f"Failed to import necessary modules. Please ensure all files are in the correct directory structure and dependencies are installed. Error: {e}")
-    st.stop()
-
-
-# ==============================
-# Gemini-based replacements for NLTK and SpaCy
-# ==============================
-
-async def analyze_sentiment_gemini(gemini_client: GeminiClient, query: str) -> Dict:
-    """
-    Performs sentiment analysis on the query using Gemini.
-    Returns a dictionary with sentiment scores (e.g., compound, positive, negative, neutral).
-    """
-    prompt = f"""Analyze the sentiment of the following medical query and provide a sentiment score.
-    Query: "{query}"
-    Respond with a JSON object containing 'compound', 'positive', 'negative', and 'neutral' scores.
-    Example response: {{"compound": 0.8, "positive": 0.7, "negative": 0.1, "neutral": 0.2}}
-    Ensure the response is ONLY the JSON object and is valid JSON.
-    """
-    messages = [
-        {"role": "system", "content": "You are a sentiment analysis expert and respond ONLY with valid JSON."},
-        {"role": "user", "content": prompt}
-    ]
-    try:
-        response = await asyncio.to_thread(gemini_client.chat, messages) # Run sync chat in a thread
-        result = response.get("choices", [{}])[0].get("message", {}).get("content", "")
-        # Attempt to parse JSON
-        try:
-            sentiment_scores = json.loads(result)
-            # Basic validation of keys
-            if all(k in sentiment_scores for k in ['compound', 'positive', 'negative', 'neutral']):
-                return sentiment_scores
-            else:
-                st.warning("Gemini sentiment analysis returned invalid JSON structure.")
-                return {"compound": 0.0, "positive": 0.0, "negative": 0.0, "neutral": 1.0}
-        except json.JSONDecodeError:
-            st.warning(f"Gemini sentiment analysis returned non-JSON response: {result[:100]}...")
-            return {"compound": 0.0, "positive": 0.0, "negative": 0.0, "neutral": 1.0}
-    except Exception as e:
-        st.error(f"Error in Gemini sentiment analysis: {e}")
-        return {"compound": 0.0, "positive": 0.0, "negative": 0.0, "neutral": 1.0} # Return neutral on error
-
-async def extract_medical_entities_gemini(gemini_client: GeminiClient, query: str) -> List[str]:
-    """
-    Extracts medical entities from the query using Gemini.
-    Returns a list of extracted medical terms.
-    """
-    prompt = f"""Extract key medical entities (like symptoms, conditions, body parts, medications) from the following query.
-    Query: "{query}"
-    Respond with a JSON object containing a single key "entities" which is a list of the extracted medical terms.
-    Example response: {{"entities": ["fever", "cough", "headache"]}}
-    Ensure the response is ONLY the JSON object and is valid JSON.
-    """
-    messages = [
-        {"role": "system", "content": "You are a medical entity extraction expert and respond ONLY with valid JSON."},
-        {"role": "user", "content": prompt}
-    ]
-    try:
-        response = await asyncio.to_thread(gemini_client.chat, messages) # Run sync chat in a thread
-        result = response.get("choices", [{}])[0].get("message", {}).get("content", "")
-        # Attempt to parse JSON
-        try:
-            entities_json = json.loads(result)
-             # Basic validation of keys and value type
-            if isinstance(entities_json.get("entities"), list):
-                return entities_json.get("entities", [])
-            else:
-                st.warning("Gemini entity extraction returned invalid JSON structure.")
-                return []
-        except json.JSONDecodeError:
-            st.warning(f"Gemini entity extraction returned non-JSON response: {result[:100]}...")
-            return []
-    except Exception as e:
-        st.error(f"Error in Gemini entity extraction: {e}")
-        return [] # Return empty list on error
-
-
-# ==============================
-# Streamlit App
-# ==============================
-
-st.set_page_config(page_title="Medical Health Agent", layout="wide")
-
-st.header("Medical Health Help System")
-
+# Load environment variables
 load_dotenv()
 
-# Initialize session state
-if 'task' not in st.session_state:
-    st.session_state.task = None
-if 'analysis_done' not in st.session_state:
-    st.session_state.analysis_done = False
-if 'search_extract_done' not in st.session_state:
-    st.session_state.search_extract_done = False
-if 'rag_analysis_done' not in st.session_state:
-    st.session_state.rag_analysis_done = False
-if 'reports_saved' not in st.session_state:
-    st.session_state.reports_saved = False
-if 'patient_report_saved' not in st.session_state:
-    st.session_state.patient_report_saved = False
-if 'sentiment_entities_predicted' not in st.session_state:
-    st.session_state.sentiment_entities_predicted = False
-if 'full_report_content' not in st.session_state:
-    st.session_state.full_report_content = None
-if 'summary_report_content' not in st.session_state:
-    st.session_state.summary_report_content = None
-if 'patient_report_content' not in st.session_state:
-    st.session_state.patient_report_content = None
-if 'diagnosis_prediction' not in st.session_state:
-    st.session_state.diagnosis_prediction = None
-if 'sentiment_results' not in st.session_state:
-    st.session_state.sentiment_results = None
-if 'entity_results' not in st.session_state:
-    st.session_state.entity_results = None
-if 'diagnosis_explanation' not in st.session_state:
-    st.session_state.diagnosis_explanation = None
-if 'wearable_summary' not in st.session_state:
-    st.session_state.wearable_summary = None
-if 'additional_files_content' not in st.session_state:
-    st.session_state.additional_files_content = {}
-if 'vectorizer' not in st.session_state:
-    st.session_state.vectorizer = None
-if 'clf_model' not in st.session_state:
-    st.session_state.clf_model = None
-
-
-# Load environment variables and initialize clients
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-2.5-flash-exp-04-17") # Use a Google embedding model
-
-if not GEMINI_API_KEY or not TAVILY_API_KEY or not SUPABASE_URL or not SUPABASE_KEY:
-    st.error("Please ensure GEMINI_API_KEY, TAVILY_API_KEY, SUPABASE_URL, and SUPABASE_KEY are set in your environment variables.")
+# Configure Gemini API
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", st.secrets.get("GEMINI_API_KEY", ""))
+if not GEMINI_API_KEY:
+    st.error("Gemini API key not found. Please set it in environment variables or Streamlit secrets.")
     st.stop()
+genai.configure(api_key=GEMINI_API_KEY)
+model = genai.GenerativeModel('gemini-pro')
 
-# Initialize clients (these can be cached)
-@st.cache_resource
-def initialize_clients(gemini_api_key, tavily_api_key):
-    console = Console() # Use Rich console for internal logging/debugging if needed, Streamlit handles display
-    analysis_config = AnalysisConfig(model_name=GEMINI_MODEL_NAME, temperature=0.3)
-    gemini_client = GeminiClient(api_key=gemini_api_key, config=analysis_config)
-    search_client = TavilyClient(api_key=tavily_api_key)
-    extractor = TavilyExtractor(api_key=tavily_api_key)
-    search_config = SearchConfig()
-    search_service = WebSearchService(search_client, search_config)
-    subject_analyzer = SubjectAnalyzer(llm_client=gemini_client, config=analysis_config)
-    return gemini_client, search_service, extractor, subject_analyzer
-
-gemini_client, search_service, extractor, subject_analyzer = initialize_clients(GEMINI_API_KEY, TAVILY_API_KEY)
-
-# Train classifier on startup and cache it
-@st.cache_resource
-def get_classifier():
-    st.info("Training symptom classifier...")
+# Gemini NLP Functions
+def analyze_sentiment(query: str) -> dict:
+    prompt = f"Analyze the sentiment of the following medical query and return a sentiment score (positive, negative, neutral):\n\n{query}"
     try:
-        vectorizer, clf_model = train_symptom_classifier()
-        if vectorizer and clf_model:
-            st.success("Symptom classifier trained.")
-            return vectorizer, clf_model
-        else:
-             st.warning("Could not train classifier. Diagnosis prediction will be unavailable.")
-             return None, None
+        response = model.generate_content(prompt)
+        sentiment = response.text.strip()
+        return {"sentiment": sentiment, "compound": 0.5 if "positive" in sentiment.lower() else -0.5 if "negative" in sentiment.lower() else 0.0}
     except Exception as e:
-        st.error(f"Error training classifier: {e}")
-        return None, None
+        return {"error": str(e), "compound": 0.0}
 
-st.session_state.vectorizer, st.session_state.clf_model = get_classifier()
+def extract_medical_entities(query: str) -> list:
+    prompt = f"Extract medical entities (e.g., diseases, symptoms, medications) from the following text:\n\n{query}"
+    try:
+        response = model.generate_content(prompt)
+        entities = response.text.strip().split(", ")
+        return [e for e in entities if e]
+    except Exception as e:
+        return [f"Error extracting entities: {str(e)}"]
 
+def predict_diagnosis(query: str) -> str:
+    prompt = f"Based on the following symptoms or medical query, predict a possible diagnosis:\n\n{query}"
+    try:
+        response = model.generate_content(prompt)
+        return response.text.strip()
+    except Exception as e:
+        return f"Error predicting diagnosis: {str(e)}"
 
-# --- Input Section ---
-st.subheader("Patient Information and Query")
-original_query = st.text_area("Describe your current medical symptoms or issue:", key="original_query")
+def generate_patient_summary(comprehensive_report: str) -> str:
+    prompt = f"Summarize the following comprehensive diagnostic report in simple, clear language for a patient:\n\n{comprehensive_report}"
+    try:
+        response = model.generate_content(prompt)
+        return response.text.strip()
+    except Exception as e:
+        return f"Error generating summary: {str(e)}"
 
-col1, col2 = st.columns(2)
-with col1:
-    include_urls_input = st.text_input("Enter URL(s) to include (comma-separated):", key="include_urls")
-    include_urls = [url.strip() for url in include_urls_input.split(',')] if include_urls_input else []
-with col2:
-    omit_urls_input = st.text_input("Enter URL(s) to omit (comma-separated):", key="omit_urls")
-    omit_urls = [url.strip() for url in omit_urls_input.split(',')] if omit_urls_input else []
+# Visualization Function
+def visualize_query_trends():
+    filename = "query_history.csv"
+    if not os.path.exists(filename):
+        st.warning("No query history available for visualization.")
+        return
+    df = pd.read_csv(filename)
+    if df.empty:
+        st.warning("Query history is empty.")
+        return
 
-uploaded_files = st.file_uploader("Upload additional reference files (PDF, DOCX, CSV, Excel, TXT)", type=["pdf", "docx", "csv", "xls", "xlsx", "txt"], accept_multiple_files=True, key="uploaded_files")
+    # Bar plot for predicted diagnosis frequency
+    diag_counts = df['predicted_diagnosis'].value_counts()
+    fig, ax = plt.subplots(figsize=(8, 6))
+    sns.barplot(x=diag_counts.index, y=diag_counts.values, palette="viridis", ax=ax)
+    ax.set_title("Frequency of Predicted Diagnoses")
+    ax.set_xlabel("Diagnosis")
+    ax.set_ylabel("Count")
+    plt.xticks(rotation=45)
+    st.pyplot(fig)
 
-if uploaded_files:
-    st.session_state.additional_files_content = {}
-    console_temp = Console() # Use a temporary console for file extraction messages
-    for uploaded_file in uploaded_files:
-        # Streamlit file uploader provides file-like objects, not paths
-        # Need to save temporarily or pass the file object
-        # Saving temporarily is simpler for compatibility with existing extract_text_from_file
-        file_path = os.path.join("./temp_uploads", uploaded_file.name)
-        os.makedirs("./temp_uploads", exist_ok=True)
-        with open(file_path, "wb") as f:
-            f.write(uploaded_file.getbuffer())
-        content = extract_text_from_file(file_path, console_temp) # Pass console_temp
-        if content:
-            st.session_state.additional_files_content[uploaded_file.name] = content
-        os.remove(file_path) # Clean up temporary file
+    # Line plot for sentiment compound over time
+    df['timestamp'] = pd.to_datetime(df['timestamp'])
+    df = df.sort_values("timestamp")
+    fig, ax = plt.subplots(figsize=(10, 6))
+    sns.lineplot(data=df, x="timestamp", y="sentiment_compound", marker="o", ax=ax)
+    ax.set_title("Sentiment Compound Score Over Time")
+    ax.set_xlabel("Timestamp")
+    ax.set_ylabel("Sentiment Compound Score")
+    ax.tick_params(axis='x', rotation=45)
+    st.pyplot(fig)
 
-search_depth = st.selectbox("Search Depth:", ["basic", "advanced"], index=1, key="search_depth")
-search_breadth = st.number_input("Search Breadth (number of results):", min_value=1, value=10, key="search_breadth")
+    # Pie chart for common medical entities
+    entity_list = []
+    for entities_str in df['entities']:
+        if pd.isna(entities_str) or entities_str.strip() == "":
+            continue
+        entities = [e.strip() for e in entities_str.split(",") if e.strip()]
+        entity_list.extend(entities)
+    if entity_list:
+        entity_counts = Counter(entity_list)
+        labels = list(entity_counts.keys())
+        sizes = list(entity_counts.values())
+        fig, ax = plt.subplots(figsize=(8, 8))
+        ax.pie(sizes, labels=labels, autopct="%1.1f%%", startangle=140)
+        ax.set_title("Distribution of Extracted Medical Entities")
+        st.pyplot(fig)
 
-# --- Process Buttons ---
-st.subheader("Run Analysis Steps")
+# Helper Functions
+def save_query_history(query, diagnosis, sentiment, entities):
+    filename = "query_history.csv"
+    file_exists = os.path.isfile(filename)
+    with open(filename, mode="a", newline="", encoding="utf-8") as csvfile:
+        writer = csv.writer(csvfile)
+        if not file_exists:
+            writer.writerow(["timestamp", "query", "predicted_diagnosis", "sentiment_compound", "entities"])
+        writer.writerow([datetime.now().isoformat(), query, diagnosis, sentiment.get("compound", 0), ", ".join(entities)])
 
-if st.button("Analyze Query and Predict Diagnosis", key="analyze_button"):
-    if not original_query:
-        st.warning("Please enter a medical query.")
-    else:
-        st.session_state.task = MedicalTask(original_query, Console()) # Re-initialize task for new query
-        st.session_state.analysis_done = False
-        st.session_state.search_extract_done = False
-        st.session_state.rag_analysis_done = False
-        st.session_state.reports_saved = False
-        st.session_state.patient_report_saved = False
-        st.session_state.sentiment_entities_predicted = False
-        st.session_state.full_report_content = None
-        st.session_state.summary_report_content = None
-        st.session_state.patient_report_content = None
-        st.session_state.diagnosis_prediction = None
-        st.session_state.sentiment_results = None
-        st.session_state.entity_results = None
-        st.session_state.diagnosis_explanation = None
-        st.session_state.wearable_summary = None
-
-
-        with st.spinner("Analyzing query, predicting diagnosis, sentiment, and extracting entities..."):
-            try:
-                current_date = datetime.today().strftime("%Y-%m-%d")
-                # Subject Analysis
-                asyncio.run(st.session_state.task.analyze(subject_analyzer, current_date))
-                st.session_state.analysis_done = True
-                st.success("Query Analysis Complete.")
-
-                # Sentiment Analysis (Gemini)
-                st.session_state.sentiment_results = asyncio.run(analyze_sentiment_gemini(gemini_client, original_query))
-                st.write("Sentiment Analysis Results:", st.session_state.sentiment_results)
-
-                # Entity Extraction (Gemini)
-                st.session_state.entity_results = asyncio.run(extract_medical_entities_gemini(gemini_client, original_query))
-                st.write("Extracted Medical Entities:", st.session_state.entity_results)
-
-
-                # Diagnosis Prediction and Explanation (if classifier is available)
-                if st.session_state.vectorizer and st.session_state.clf_model:
-                    predicted_diag, diag_proba = predict_diagnosis(original_query, st.session_state.vectorizer, st.session_state.clf_model)
-                    st.session_state.diagnosis_prediction = f"{predicted_diag} with probabilities: {diag_proba}"
-                    st.write("Predicted Diagnosis:", st.session_state.diagnosis_prediction)
-
-                    st.session_state.diagnosis_explanation = explain_diagnosis(original_query, st.session_state.vectorizer, st.session_state.clf_model)
-                    st.write("Diagnosis Explanation:", st.session_state.diagnosis_explanation)
-                else:
-                    st.warning("Symptom classifier not available. Cannot predict diagnosis.")
-                    st.session_state.diagnosis_prediction = "Classifier not available."
-                    st.session_state.diagnosis_explanation = "Classifier not available."
-
-
-                # Save query history
-                # Ensure sentiment_results has the 'compound' key before saving
-                sentiment_compound = st.session_state.sentiment_results.get("compound", 0) if st.session_state.sentiment_results else 0
-                save_query_history(original_query, st.session_state.diagnosis_prediction.split(" with probabilities:")[0] if st.session_state.diagnosis_prediction and " with probabilities:" in st.session_state.diagnosis_prediction else "N/A", sentiment_compound, st.session_state.entity_results)
-                st.info("Query history saved.")
-
-                st.session_state.sentiment_entities_predicted = True
-
-            except Exception as e:
-                st.error(f"An error occurred during query analysis: {e}")
-
-if st.session_state.analysis_done:
-    st.subheader("Agent's Understanding")
-    st.write("**Patient Query:**", st.session_state.task.original_query)
-    st.write("**Identified Medical Issue:**", st.session_state.task.analysis.get('main_subject', 'Unknown Issue'))
-    temporal = st.session_state.task.analysis.get("temporal_context", {})
-    if temporal:
-        st.write("**Temporal Context:**")
-        for key, value in temporal.items():
-            st.write(f"- {key.capitalize()}: {value}")
-    else:
-        st.write("**Temporal Context:** None")
-    needs = st.session_state.task.analysis.get("What_needs_to_be_researched", [])
-    st.write("**Key aspects to investigate:**", ', '.join(needs) if needs else 'None')
-
-    # Feedback loop
-    feedback = st.text_area("Provide feedback on the agent's understanding (optional):", key="feedback")
-    if st.button("Update Analysis with Feedback", key="feedback_button"):
-        if feedback:
-            st.session_state.task.update_feedback(feedback)
-            st.session_state.task.current_query = f"{original_query} - Additional context: {feedback}"
-            with st.spinner("Reanalyzing query with your feedback..."):
-                 try:
-                    current_date = datetime.today().strftime("%Y-%m-%d")
-                    asyncio.run(st.session_state.task.analyze(subject_analyzer, current_date))
-                    st.session_state.analysis_done = True # Keep analysis_done as True
-                    st.success("Query Analysis Updated with Feedback.")
-                    # Re-display updated analysis
-                    st.subheader("Agent's Understanding (Updated)")
-                    st.write("**Patient Query:**", st.session_state.task.original_query)
-                    st.write("**Identified Medical Issue:**", st.session_state.task.analysis.get('main_subject', 'Unknown Issue'))
-                    temporal = st.session_state.task.analysis.get("temporal_context", {})
-                    if temporal:
-                        st.write("**Temporal Context:**")
-                        for key, value in temporal.items():
-                            st.write(f"- {key.capitalize()}: {value}")
-                    else:
-                        st.write("**Temporal Context:** None")
-                    needs = st.session_state.task.analysis.get("What_needs_to_be_researched", [])
-                    st.write("**Key aspects to investigate:**", ', '.join(needs) if needs else 'None')
-                 except Exception as e:
-                    st.error(f"An error occurred during feedback analysis: {e}")
+def extract_text_from_file(file_path):
+    ext = os.path.splitext(file_path)[1].lower()
+    try:
+        if ext == '.pdf':
+            import PyPDF2
+            with open(file_path, 'rb') as f:
+                reader = PyPDF2.PdfReader(f)
+                return "".join(page.extract_text() or "" for page in reader.pages)
+        elif ext == '.docx':
+            import docx
+            doc = docx.Document(file_path)
+            return "\n".join(para.text for para in doc.paragraphs)
+        elif ext in ['.csv', '.xls', '.xlsx']:
+            df = pd.read_csv(file_path) if ext == '.csv' else pd.read_excel(file_path)
+            return df.to_csv(index=False)
         else:
-            st.info("No feedback provided.")
+            with open(file_path, 'r', encoding="utf-8") as f:
+                return f.read()
+    except Exception as e:
+        st.warning(f"Could not extract file {file_path}: {e}")
+        return ""
 
+# Streamlit App
+def main():
+    st.set_page_config(page_title="Medical Agent", layout="wide")
+    st.title("🏥 Medical Agent")
+    st.markdown("An interactive tool to analyze medical queries and generate diagnostic reports.")
 
-if st.session_state.analysis_done:
-    if st.button("Search and Extract Information", key="search_button"):
-        with st.spinner("Searching the web and extracting content..."):
-            try:
-                # Pass the correct omit_urls and search parameters
-                asyncio.run(st.session_state.task.search_and_extract(search_service, extractor, omit_urls, search_depth, search_breadth))
-                st.session_state.search_extract_done = True
-                st.success("Search and Extraction Complete.")
-            except Exception as e:
-                st.error(f"An error occurred during search and extraction: {e}")
+    # Sidebar Configuration
+    with st.sidebar:
+        st.header("Configuration")
+        search_depth = st.selectbox("Search Depth", ["basic", "advanced"], index=1)
+        search_breadth = st.number_input("Search Breadth (results)", min_value=1, max_value=50, value=10)
+        include_urls = st.text_input("Include URLs (comma-separated)", "")
+        omit_urls = st.text_input("Omit URLs (comma-separated)", "")
+        own_files = st.text_input("Local Files (comma-separated)", "")
+        st.markdown("---")
+        st.info("Ensure API keys are set in `.env` or Streamlit secrets.")
 
-if st.session_state.search_extract_done:
-    st.subheader("Search Results")
-    for topic, results in st.session_state.task.search_results.items():
-        st.write(f"**Search for: {topic}**")
-        if results:
-            for res in results:
-                st.write(f"- [{res.get('title', 'No Title')}]({res.get('url', '#')}) (Relevance: {res.get('score', 'N/A')})")
-        else:
-            st.write("No search results found.")
+    # Main Interface
+    query = st.text_area("Enter your medical query:", height=150, placeholder="Describe your symptoms or medical issue...")
+    col1, col2 = st.columns([1, 1])
+    with col1:
+        submit_button = st.button("Analyze Query")
+    with col2:
+        visualize_button = st.button("Visualize Trends")
 
-    st.subheader("Extracted Content")
-    for topic, items in st.session_state.task.extracted_content.items():
-        st.write(f"**Extraction for: {topic}**")
-        if items:
-            for item in items:
-                url = item.get("url", "No URL")
-                text = item.get("text") or item.get("raw_content", "")
-                with st.expander(f"Content from {url}"):
-                    st.write(text)
-        else:
-            st.write("No content extracted.")
+    if submit_button and query:
+        with st.spinner("Processing your query..."):
+            # Initialize Services
+            TAVILY_API_KEY = os.getenv("TAVILY_API_KEY")
+            GEMINI_MODEL_NAME = os.getenv("GEMINI_MODEL_NAME", "gemini-2.5-flash-exp-04-17")
+            analysis_config = AnalysisConfig(model_name=GEMINI_MODEL_NAME, temperature=0.3)
+            gemini_client = GeminiClient(api_key=GEMINI_API_KEY, config=analysis_config)
+            search_client = TavilyClient(api_key=TAVILY_API_KEY)
+            extractor = TavilyExtractor(api_key=TAVILY_API_KEY)
+            search_service = WebSearchService(search_client, SearchConfig())
+            subject_analyzer = SubjectAnalyzer(llm_client=gemini_client, config=analysis_config)
+            SUPABASE_URL = os.getenv("SUPABASE_URL")
+            SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+            supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
+            # Process Additional Files
+            additional_files = {}
+            if own_files:
+                for file_path in [f.strip() for f in own_files.split(",")]:
+                    if os.path.exists(file_path):
+                        additional_files[file_path] = extract_text_from_file(file_path)
 
-if st.session_state.search_extract_done:
-    if st.button("Perform RAG Analysis and Generate Reports", key="rag_button"):
-        with st.spinner("Performing RAG analysis and generating reports..."):
-            try:
-                # Pass the gemini_client for RAG analysis
-                comprehensive_report, citations = asyncio.run(st.session_state.task.analyze_full_content_rag(gemini_client))
-                st.session_state.full_report_content = st.session_state.task.generate_report(st.session_state.additional_files_content, comprehensive_report, citations)
-                st.session_state.summary_report_content = st.session_state.task.generate_summary_report(comprehensive_report, citations)
+            # Medical Task Processing
+            class MedicalTask:
+                def __init__(self, query):
+                    self.original_query = query
+                    self.current_query = query
+                    self.analysis = {}
+                    self.search_results = {}
+                    self.extracted_content = {}
 
-                # Read wearable data if available
-                st.session_state.wearable_summary = read_wearable_data()
-                if st.session_state.wearable_summary:
-                    st.info("Wearable data integrated into the report.")
+                async def analyze(self):
+                    self.analysis = subject_analyzer.analyze(f"{self.current_query} (as of {datetime.today().strftime('%Y-%m-%d')})")
 
+                async def search_and_extract(self):
+                    topics = [self.analysis.get("main_subject", self.current_query)] + self.analysis.get("What_needs_to_be_researched", [])
+                    omit_list = [o.strip() for o in omit_urls.split(",")] if omit_urls else []
+                    for topic in topics:
+                        if not topic:
+                            continue
+                        results = search_service.search_subject(topic, "medical", search_depth=search_depth, results=search_breadth).get("results", [])
+                        self.search_results[topic] = [res for res in results if not any(o.lower() in res.get("url", "").lower() for o in omit_list)]
+                        urls = [res.get("url") for res in self.search_results[topic]]
+                        extraction = extractor.extract(urls=urls, extract_depth="advanced", include_images=False)
+                        self.extracted_content[topic] = extraction.get("results", [])
 
-                st.session_state.rag_analysis_done = True
-                st.success("RAG Analysis and Report Generation Complete.")
-            except Exception as e:
-                st.error(f"An error occurred during RAG analysis and report generation: {e}")
+                async def analyze_full_content_rag(self):
+                    full_content = "".join(f"\n\n=== Content from {item.get('url', 'No URL')} ===\n{item.get('text') or item.get('raw_content', '')}\n" 
+                                          for topic, items in self.extracted_content.items() for item in items)
+                    chunks = [full_content[i:i+765] for i in range(0, len(full_content), 765)]
+                    embeddings = [model.embed_content(chunk).embeddings[0].values for chunk in chunks]
+                    faiss_index = faiss.IndexFlatL2(len(embeddings[0]))
+                    faiss_index.add(np.array(embeddings).astype('float32'))
+                    query_embedding = model.embed_content(self.current_query).embeddings[0].values
+                    distances, indices = faiss_index.search(np.array([query_embedding]).astype('float32'), min(155, len(chunks)))
+                    matched_chunks = [chunks[i] for i in indices[0] if i < len(chunks)]
+                    prompt = f"Generate a comprehensive diagnostic report for: {self.current_query}\nBased on:\n{'\n\n'.join(matched_chunks)}"
+                    response = gemini_client.chat([{"role": "user", "content": prompt}])
+                    return response.get("choices", [{}])[0].get("message", {}).get("content", "")
 
-if st.session_state.rag_analysis_done:
-    st.subheader("Generated Reports")
-    if st.session_state.full_report_content:
-        with st.expander("Full Diagnostic Report"):
-            st.markdown(st.session_state.full_report_content)
-        st.download_button("Download Full Report (Markdown)", st.session_state.full_report_content, file_name=f"{st.session_state.task.original_query.replace(' ', '_')}_diagnostic_full.md")
+            # Execute Task
+            task = MedicalTask(query)
+            asyncio.run(task.analyze())
+            if not include_urls:
+                asyncio.run(task.search_and_extract())
+            else:
+                task.search_results = {"User Provided": [{"title": "User Provided", "url": url} for url in include_urls.split(",")]}
+                extraction = extractor.extract(urls=[url.strip() for url in include_urls.split(",")], extract_depth="advanced", include_images=False)
+                task.extracted_content["User Provided"] = extraction.get("results", [])
 
-    if st.session_state.summary_report_content:
-        with st.expander("Summary Diagnostic Report"):
-            st.markdown(st.session_state.summary_report_content)
-        st.download_button("Download Summary Report (Markdown)", st.session_state.summary_report_content, file_name=f"{st.session_state.task.original_query.replace(' ', '_')}_diagnostic_summary.md")
+            # Display Results
+            st.subheader("Analysis")
+            sentiment = analyze_sentiment(query)
+            entities = extract_medical_entities(query)
+            diagnosis = predict_diagnosis(query)
+            st.write(f"**Sentiment:** {sentiment.get('sentiment', 'Error')}")
+            st.write(f"**Entities:** {', '.join(entities)}")
+            st.write(f"**Predicted Diagnosis:** {diagnosis}")
+            save_query_history(query, diagnosis, sentiment, entities)
 
-    if st.button("Generate Patient-Friendly Summary", key="patient_summary_button"):
-         if st.session_state.full_report_content:
-             with st.spinner("Generating patient-friendly summary..."):
-                 try:
-                     # Pass the gemini_client for patient summary generation
-                     patient_report = asyncio.run(st.session_state.task.generate_patient_summary_report(gemini_client, st.session_state.full_report_content, [])) # Citations might not be needed for prompt
-                     st.session_state.patient_report_content = patient_report
-                     st.session_state.patient_report_saved = True
-                     st.success("Patient-Friendly Summary Generated.")
-                 except Exception as e:
-                    st.error(f"An error occurred during patient summary generation: {e}")
-         else:
-            st.warning("Please generate the full report first.")
+            comprehensive_report = asyncio.run(task.analyze_full_content_rag())
+            st.subheader("Comprehensive Report")
+            st.markdown(comprehensive_report)
 
+            patient_summary = generate_patient_summary(comprehensive_report)
+            st.subheader("Patient-Friendly Summary")
+            st.markdown(patient_summary)
 
-if st.session_state.patient_report_saved:
-    st.subheader("Patient-Friendly Summary")
-    if st.session_state.patient_report_content:
-         st.markdown(st.session_state.patient_report_content)
-         st.download_button("Download Patient Summary (Markdown)", st.session_state.patient_report_content, file_name=f"{st.session_state.task.original_query.replace(' ', '_')}_patient_summary.md")
+            # Download Buttons
+            base_filename = ''.join(c if c.isalnum() or c.isspace() else '_' for c in query).strip().replace(' ', '_') or "report"
+            st.download_button("Download Full Report", comprehensive_report, f"{base_filename}_full.md")
+            st.download_button("Download Patient Summary", patient_summary, f"{base_filename}_patient.md")
 
-# --- Visualizations ---
-st.subheader("Query Trend Visualizations")
-if st.button("Generate Visualizations", key="viz_button"):
-     with st.spinner("Generating visualizations from query history..."):
-         try:
-             # Modify visualize_query_trends to return figures or use st.pyplot directly
-             # For now, it saves files, so we'll inform the user
-             visualize_query_trends()
-             st.info("Visualizations generated and saved as PNG files in the application directory.")
-             # **Future Improvement:** Adapt visualize_query_trends to return matplotlib figures and display them with st.pyplot()
-             # Example: fig = visualize_query_trends_streamlit()
-             # st.pyplot(fig)
-         except Exception as e:
-            st.error(f"An error occurred during visualization generation: {e}")
+    if visualize_button:
+        visualize_query_trends()
+
+if __name__ == "__main__":
+    main()
