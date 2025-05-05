@@ -14,7 +14,7 @@ class SubjectAnalysis:
 class AnalysisConfig:
     """Configuration for subject analysis"""
     temperature: float = 0.6
-    model_name: str = "deepseek-ai/DeepSeek-R1"
+    model_name: str = "gemini-2.5-pro-exp-03-25"
     max_retries: int = 3
     timeout: int = 30
     tavily_api_key: str = None  # Tavily API key for web search
