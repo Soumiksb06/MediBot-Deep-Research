@@ -267,6 +267,19 @@ Medical Entities:
         logger.error(f"Gemini entity extraction failed: {e}\n{traceback.format_exc()}")
         return f"Error during entity extraction: {e}"
 
+# --- Helper for running blocking extraction in executor ---
+def _run_extraction_sync(extractor_instance, urls, extract_depth, include_images):
+    """
+    Helper function to run the synchronous extractor.extract method in an executor.
+    Takes arguments positionally.
+    """
+    # This function runs in the executor's thread
+    return extractor_instance.extract(
+        urls=urls,
+        extract_depth=extract_depth,
+        include_images=include_images
+    )
+
 # --- Core Logic Adapted from Original Script ---
 
 def extract_text_from_file(uploaded_file):
@@ -916,21 +929,16 @@ async def run_analysis_pipeline(
                         if urls_to_extract:
                              if not extractor_instance:
                                  raise ValueError("Extractor instance is not available.")
-                             # Run sync extract method in executor
+                             # Run sync extract method in executor using helper function
                              loop = asyncio.get_running_loop()
-                             # --- MODIFIED: Using lambda to wrap the synchronous extract call ---
-                             # This passes extract arguments as positional args to the lambda,
-                             # and the lambda calls extract with them unpacked from a dict.
-                             extract_kwargs = {
-                                 "urls": urls_to_extract,
-                                 "extract_depth": "advanced",
-                                 "include_images": False
-                             }
+                             # --- MODIFIED: Using helper function for extraction call ---
                              extraction_response = await loop.run_in_executor(
                                  None, # Use the default executor
-                                 lambda ext, kwargs_dict: ext.extract(**kwargs_dict),
-                                 extractor_instance, # ext argument for lambda
-                                 extract_kwargs # kwargs_dict argument for lambda
+                                 _run_extraction_sync, # Pass the helper function
+                                 extractor_instance, # Positional arg 1 for helper: the extractor instance
+                                 urls_to_extract,    # Positional arg 2 for helper: the list of urls
+                                 "advanced",         # Positional arg 3 for helper: extract_depth
+                                 False               # Positional arg 4 for helper: include_images
                              )
                              # --- END MODIFIED SECTION ---
 
@@ -957,19 +965,16 @@ async def run_analysis_pipeline(
                 try:
                     if not extractor_instance:
                          raise ValueError("Extractor instance is not available.")
-                    # Run sync extract method in executor
+                    # Run sync extract method in executor using helper function for user URLs
                     loop = asyncio.get_running_loop()
-                    # --- MODIFIED: Using lambda to wrap the synchronous extract call for user URLs ---
-                    extract_kwargs = {
-                         "urls": filtered_urls,
-                         "extract_depth": "advanced",
-                         "include_images": False
-                    }
+                    # --- MODIFIED: Using helper function for extraction call for user URLs ---
                     extraction_response = await loop.run_in_executor(
                          None, # Use the default executor
-                         lambda ext, kwargs_dict: ext.extract(**kwargs_dict),
-                         extractor_instance, # ext argument for lambda
-                         extract_kwargs # kwargs_dict argument for lambda
+                         _run_extraction_sync, # Pass the helper function
+                         extractor_instance, # Positional arg 1 for helper: the extractor instance
+                         filtered_urls,      # Positional arg 2 for helper: the list of urls
+                         "advanced",         # Positional arg 3 for helper: extract_depth
+                         False               # Positional arg 4 for helper: include_images
                     )
                     # --- END MODIFIED SECTION ---
 
