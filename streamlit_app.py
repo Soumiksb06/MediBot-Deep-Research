@@ -1197,9 +1197,10 @@ with st.sidebar:
     st.header("Configuration")
     query = st.text_area("1. Enter Patient Symptoms/Issue:", height=150, key="query_input", help="Describe the primary health concern or symptoms.")
     st.subheader("Web Search Options")
-    # Corrected line: Changed height from 50 to 150
+    # Corrected line: Changed height from 50 to 150 for Include Specific URLs
     include_urls_str = st.text_area("Include Specific URLs (one per line, optional):", height=150, key="include_urls", help="Force the agent to use only these URLs for information.")
-    omit_urls_str = st.text_area("Omit URLs Containing (one per line, optional):", height=50, key="omit_urls", help="Exclude search results from URLs containing these strings (e.g., 'forum').")
+    # Corrected line: Changed height from 50 to 150 for Omit URLs Containing
+    omit_urls_str = st.text_area("Omit URLs Containing (one per line, optional):", height=150, key="omit_urls", help="Exclude search results from URLs containing these strings (e.g., 'forum').")
     search_depth = st.selectbox("Search Depth:", ["basic", "advanced"], index=1, key="search_depth", help="'basic' is faster, 'advanced' is more thorough.")
     search_breadth = st.number_input("Search Breadth (results per query):", min_value=3, max_value=20, value=7, key="search_breadth", help="Number of search results to retrieve for each identified topic.")
     st.subheader("Reference Files (Optional)")
@@ -1210,7 +1211,7 @@ with st.sidebar:
     use_faiss = st.checkbox("Use FAISS for RAG Matching (if installed)", value=True, key="use_faiss", help="Use local FAISS index for faster similarity search during RAG. Falls back to Supabase if unchecked or FAISS fails.")
     st.divider()
     submit_button = st.button("Run Diagnostic Analysis", type="primary", key="submit_button", use_container_width=True)
-
+    
 # --- Main Area for Outputs ---
 st.header("Analysis Results")
 
