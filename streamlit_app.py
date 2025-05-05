@@ -883,7 +883,7 @@ async def run_analysis_pipeline(
                         # Run sync search_subject method in executor
                         loop = asyncio.get_running_loop()
                         response = await loop.run_in_executor(None, search_service_instance.search_subject,
-                            topic, "medical", search_depth=search_depth, results=search_breadth)
+                            topic, "general", search_depth=search_depth, results=search_breadth)
 
                         results = response.get("results", [])
                         filtered_results = [
