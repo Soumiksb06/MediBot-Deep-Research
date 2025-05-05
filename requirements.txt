@@ -21,7 +21,6 @@ rich
 python-dotenv
 google-generativeai
 google-genai
-supabase-py
 supabase
 scikit-learn
 nltk
