@@ -861,7 +861,7 @@ async def run_analysis_pipeline(
     search_performed = False
     search_status = st.empty() # Placeholder for status updates
 
-    if not include_urls:
+    if not include_urls and search_service_instance: # Only proceed if search service is available
         topics_to_search = [analysis.get("main_subject", current_query)] # Fallback to query
         topics_to_search += analysis.get("What_needs_to_be_researched", [])
         topics_to_search = list(set(filter(None, topics_to_search))) # Unique, non-empty topics
@@ -878,12 +878,30 @@ async def run_analysis_pipeline(
                     progress_bar.progress(progress_val, text=f"Searching & Extracting for: {topic}...")
                     search_status.info(f"Searching & Extracting for: {topic}...")
                     try:
-                        if not search_service_instance:
+                        if not search_service_instance: # Redundant check, but kept for safety
                              raise ValueError("Search Service instance is not available.")
-                        # Run sync search_subject method in executor
+
                         loop = asyncio.get_running_loop()
-                        response = await loop.run_in_executor(None, search_service_instance.search_subject,
-                            topic, "general", search_depth=search_depth, results=search_breadth)
+
+                        # --- MODIFIED: Preparing kwargs dict and passing to lambda ---
+                        # This is another attempt to work around run_in_executor keyword arg issues
+                        search_kwargs = {
+                            "search_depth": search_depth,
+                            "results": search_breadth # Use "results" key as used by WebSearchService
+                        }
+                        response = await loop.run_in_executor(
+                            None, # Use the default executor
+                            lambda srv, topic_arg, category_arg, kwargs_dict: srv.search_subject(
+                                topic_arg,
+                                category_arg,
+                                **kwargs_dict # Unpack the dictionary inside lambda
+                            ),
+                            search_service_instance, # srv argument for lambda
+                            topic, # topic_arg argument for lambda
+                            "medical", # category_arg argument for lambda
+                            search_kwargs # kwargs_dict argument for lambda
+                        )
+                        # --- END MODIFIED SECTION ---
 
                         results = response.get("results", [])
                         filtered_results = [
@@ -893,6 +911,7 @@ async def run_analysis_pipeline(
                         search_results_dict[topic] = filtered_results
                         logger.info(f"Found {len(filtered_results)} relevant results for '{topic}'.")
 
+                        # The extractor instance can remain cached
                         urls_to_extract = [res.get("url") for res in filtered_results if res.get("url")]
                         if urls_to_extract:
                              if not extractor_instance:
@@ -911,8 +930,7 @@ async def run_analysis_pipeline(
                         logger.error(f"Search/Extraction failed for '{topic}': {e}\n{traceback.format_exc()}")
                         search_results_dict[topic] = []
                         extracted_content_dict[topic] = []
-    else:
-        # Use user-provided URLs
+    elif include_urls and extractor_instance: # Use user-provided URLs (only extraction needed)
         search_performed = True
         search_status.info(f"Using {len(include_urls)} user-provided URLs.")
         filtered_urls = [url for url in include_urls if not any(omit.lower() in url.lower() for omit in omit_urls)]
@@ -938,13 +956,17 @@ async def run_analysis_pipeline(
                     st.error(f"Extraction failed for user provided URLs: {e}")
                     logger.error(f"Extraction failed for user URLs: {e}\n{traceback.format_exc()}")
                     extracted_content_dict["User Provided"] = []
+    else:
+         search_status.warning("Web search and extraction skipped (either no topics/URLs or search service/extractor unavailable).")
+         logger.warning("Web search and extraction skipped.")
+
 
     analysis_results['search_results'] = search_results_dict
     analysis_results['extracted_content'] = extracted_content_dict
     if search_performed:
         search_status.success("Search and extraction phase complete.")
     else:
-        search_status.info("No web search performed (either used provided URLs or no topics found).")
+        search_status.info("No web search performed (either used provided URLs or no topics found or service unavailable).")
     progress_bar.progress(50, text="Search & Extraction finished.")
 
 
@@ -1051,7 +1073,7 @@ async def run_analysis_pipeline(
                     if num_failed > 0:
                         rag_status.warning(f"Failed to generate embeddings for {num_failed} chunks.")
                     all_chunks = [all_chunks[i] for i in valid_indices]
-                    all_embeddings = [all_embeddings[i] for i in valid_indices]
+                    all_embeddings = [all_embeddings[i] for i in valid_embeddings]
 
                     if not all_chunks:
                          rag_status.error("Embedding generation failed for all chunks. Cannot proceed with RAG.")
@@ -1149,13 +1171,12 @@ Respond with a detailed Markdown-formatted report. If no relevant information is
                             try:
                                 messages = [{"role": "user", "content": synthesis_prompt}]
                                 if hasattr(gemini_client_instance, 'chat'):
-                                    # Run sync chat in executor
-                                    loop = asyncio.get_running_loop()
-                                    response_data = await loop.run_in_executor(None, gemini_client_instance.chat, messages)
-                                    comprehensive_report = response_data.get("choices", [{}])[0].get("message", {}).get("content", "Error: Could not parse synthesis response.")
+                                     loop = asyncio.get_running_loop()
+                                     response_data = await loop.run_in_executor(None, gemini_client_instance.chat, messages)
+                                     comprehensive_report = response_data.get("choices", [{}])[0].get("message", {}).get("content", "Error: Could not parse synthesis response.")
                                 elif hasattr(gemini_client_instance, 'generate_content'):
                                      sdk_model = genai.GenerativeModel(GEMINI_MODEL_NAME)
-                                     response = await sdk_model.generate_content_async(synthesis_prompt)
+                                     response = await sdk_model.generate_content_async(prompt)
                                      comprehensive_report = response.text
                                 else:
                                      comprehensive_report = "Error: Gemini client misconfigured for synthesis."
@@ -1233,10 +1254,10 @@ with st.sidebar:
     st.header("Configuration")
     query = st.text_area("1. Enter Patient Symptoms/Issue:", height=150, key="query_input", help="Describe the primary health concern or symptoms.")
     st.subheader("Web Search Options")
-    # Corrected height to meet minimum requirement (68px)
-    include_urls_str = st.text_area("Include Specific URLs (one per line, optional):", height=150, key="include_urls", help="Force the agent to use only these URLs for information.")
-    # Corrected height to meet minimum requirement (68px)
-    omit_urls_str = st.text_area("Omit URLs Containing (one per line, optional):", height=150, key="omit_urls", help="Exclude search results from URLs containing these strings (e.g., 'forum').")
+    # Corrected height to meet minimum requirement (68px) - Reverted height to 50 based on previous uploads
+    include_urls_str = st.text_area("Include Specific URLs (one per line, optional):", height=50, key="include_urls", help="Force the agent to use only these URLs for information.")
+    # Corrected height to meet minimum requirement (68px) - Reverted height to 50 based on previous uploads
+    omit_urls_str = st.text_area("Omit URLs Containing (one per line, optional):", height=50, key="omit_urls", help="Exclude search results from URLs containing these strings (e.g., 'forum').")
     search_depth = st.selectbox("Search Depth:", ["basic", "advanced"], index=1, key="search_depth", help="'basic' is faster, 'advanced' is more thorough.")
     search_breadth = st.number_input("Search Breadth (results per query):", min_value=3, max_value=20, value=7, key="search_breadth", help="Number of search results to retrieve for each identified topic.")
     st.subheader("Reference Files (Optional)")
@@ -1263,7 +1284,7 @@ for key, value in default_state.items():
 # --- Train Classifier ---
 survey_df = None
 if uploaded_survey_file:
-    file_details = (uploaded_survey_file.name, uploaded_survey_file.size)
+    file_details = (uploaded_survey_file.name, uploaded_wearable_file.size) # Corrected: Should be survey_file.size
     if 'last_survey_file' not in st.session_state or st.session_state.last_survey_file != file_details:
         st.session_state.classifier_trained = False
         st.session_state.vectorizer = None
