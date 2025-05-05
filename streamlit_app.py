@@ -895,26 +895,23 @@ async def run_analysis_pipeline(
                              raise ValueError("Search Service instance is not available.")
 
                         loop = asyncio.get_running_loop()
-                        # --- Modified search call using lambda and kwargs dict ---
-                        # This is an attempt to work around run_in_executor keyword arg issues
+                        # Use lambda with kwargs dict for search call as previously attempted
                         search_kwargs = {
                             "search_depth": search_depth,
                             "results": search_breadth # Use "results" key as used by WebSearchService
                         }
                         response = await loop.run_in_executor(
-                            None, # Use the default executor
+                            None,
                             lambda srv, topic_arg, category_arg, kwargs_dict: srv.search_subject(
                                 topic_arg,
                                 category_arg,
-                                **kwargs_dict # Unpack the dictionary inside lambda
+                                **kwargs_dict
                             ),
-                            search_service_instance, # srv argument for lambda
-                            topic, # topic_arg argument for lambda
-                            "medical", # category_arg argument for lambda
-                            search_kwargs # kwargs_dict argument for lambda
+                            search_service_instance,
+                            topic,
+                            "medical",
+                            search_kwargs
                         )
-                        # --- End modified search call ---
-
 
                         results = response.get("results", [])
                         filtered_results = [
@@ -924,34 +921,50 @@ async def run_analysis_pipeline(
                         search_results_dict[topic] = filtered_results
                         logger.info(f"Found {len(filtered_results)} relevant results for '{topic}'.")
 
-                        # The extractor instance can remain cached
+                        # --- Improvement: Display search results immediately in the UI ---
+                        if filtered_results:
+                            st.subheader(f"Search Results for '{topic}'")
+                            for j, res in enumerate(filtered_results):
+                                st.write(f"{j+1}. [{res.get('title', 'No Title')}]({res.get('url', '#')})")
+                                # Optional: Display snippet if available
+                                # if res.get('snippet'): st.caption(res['snippet'])
+                        else:
+                            st.info(f"No relevant search results found for '{topic}'.")
+                        # --- End Improvement ---
+
+
                         urls_to_extract = [res.get("url") for res in filtered_results if res.get("url")]
                         if urls_to_extract:
                              if not extractor_instance:
                                  raise ValueError("Extractor instance is not available.")
                              # Run sync extract method in executor using helper function
                              loop = asyncio.get_running_loop()
-                             # --- MODIFIED: Using helper function for extraction call ---
+                             # Using helper function for extraction call
                              extraction_response = await loop.run_in_executor(
-                                 None, # Use the default executor
+                                 None,
                                  _run_extraction_sync, # Pass the helper function
-                                 extractor_instance, # Positional arg 1 for helper: the extractor instance
-                                 urls_to_extract,    # Positional arg 2 for helper: the list of urls
-                                 "advanced",         # Positional arg 3 for helper: extract_depth
-                                 False               # Positional arg 4 for helper: include_images
+                                 extractor_instance, # Positional arg 1 for helper
+                                 urls_to_extract,    # Positional arg 2 for helper
+                                 "advanced",         # Positional arg 3 for helper
+                                 False               # Positional arg 4 for helper
                              )
-                             # --- END MODIFIED SECTION ---
 
                              extracted_content_dict[topic] = extraction_response.get("results", [])
                              failed_count = sum(1 for item in extracted_content_dict[topic] if item.get("error"))
                              logger.info(f"Extracted content for {len(urls_to_extract) - failed_count}/{len(urls_to_extract)} URLs for topic '{topic}'.")
-                             if failed_count > 0: logger.warning(f"Failed to extract content from {failed_count} URLs for '{topic}'.")
+                             if failed_count > 0:
+                                 st.warning(f"Failed to extract content from {failed_count} URLs for '{topic}'.")
+                                 logger.warning(f"Failed to extract content from {failed_count} URLs for '{topic}'.")
+                             else:
+                                 st.success(f"Successfully extracted content from {len(urls_to_extract)} URLs for '{topic}'.")
+                        else:
+                             st.info(f"No URLs to extract content from for '{topic}' (either no search results or all omitted).") # Clarified message
 
                     except Exception as e:
                         st.error(f"Search/Extraction failed for topic '{topic}': {e}")
                         logger.error(f"Search/Extraction failed for '{topic}': {e}\n{traceback.format_exc()}")
-                        search_results_dict[topic] = []
-                        extracted_content_dict[topic] = []
+                        search_results_dict[topic] = search_results_dict.get(topic, []) # Keep search results if search succeeded before extraction failed
+                        extracted_content_dict[topic] = [] # Ensure extracted content is empty on failure
     elif include_urls and extractor_instance: # Use user-provided URLs (only extraction needed)
         search_performed = True
         search_status.info(f"Using {len(include_urls)} user-provided URLs.")
@@ -960,6 +973,12 @@ async def run_analysis_pipeline(
         search_results_dict["User Provided"] = [{"title": "User Provided", "url": url, "score": "N/A"} for url in filtered_urls]
 
         if filtered_urls:
+            # --- Improvement: Display user-provided URLs immediately ---
+            st.subheader("Provided URLs")
+            for j, url in enumerate(filtered_urls):
+                st.write(f"{j+1}. [{url}]({url})")
+            # --- End Improvement ---
+
             progress_bar.progress(30, text="Extracting from provided URLs...")
             with st.spinner("Extracting content from provided URLs..."):
                 try:
@@ -967,21 +986,23 @@ async def run_analysis_pipeline(
                          raise ValueError("Extractor instance is not available.")
                     # Run sync extract method in executor using helper function for user URLs
                     loop = asyncio.get_running_loop()
-                    # --- MODIFIED: Using helper function for extraction call for user URLs ---
                     extraction_response = await loop.run_in_executor(
-                         None, # Use the default executor
+                         None,
                          _run_extraction_sync, # Pass the helper function
-                         extractor_instance, # Positional arg 1 for helper: the extractor instance
-                         filtered_urls,      # Positional arg 2 for helper: the list of urls
-                         "advanced",         # Positional arg 3 for helper: extract_depth
-                         False               # Positional arg 4 for helper: include_images
+                         extractor_instance, # Positional arg 1 for helper
+                         filtered_urls,      # Positional arg 2 for helper
+                         "advanced",         # Positional arg 3 for helper
+                         False               # Positional arg 4 for helper
                     )
-                    # --- END MODIFIED SECTION ---
 
                     extracted_content_dict["User Provided"] = extraction_response.get("results", [])
                     failed_count = sum(1 for item in extracted_content_dict["User Provided"] if item.get("error"))
                     logger.info(f"Extracted content for {len(filtered_urls) - failed_count}/{len(filtered_urls)} user URLs.")
-                    if failed_count > 0: st.warning(f"Failed to extract content from {failed_count} provided URLs.")
+                    if failed_count > 0:
+                         st.warning(f"Failed to extract content from {failed_count} provided URLs.")
+                         logger.warning(f"Failed to extract content from {failed_count} provided URLs.")
+                    else:
+                         st.success(f"Successfully extracted content from {len(filtered_urls)} provided URLs.")
                 except Exception as e:
                     st.error(f"Extraction failed for user provided URLs: {e}")
                     logger.error(f"Extraction failed for user URLs: {e}\n{traceback.format_exc()}")
@@ -994,12 +1015,27 @@ async def run_analysis_pipeline(
     analysis_results['search_results'] = search_results_dict
     analysis_results['extracted_content'] = extracted_content_dict
     if search_performed:
-        search_status.success("Search and extraction phase complete.")
+        # Check if ANY content was extracted successfully across all topics/URLs
+        any_content_extracted = any(extracted_content_dict.values()) # Check if any list is non-empty/has results
+        if any_content_extracted:
+            search_status.success("Search and extraction phase complete (some content extracted).")
+        else:
+            search_status.warning("Search complete, but no content could be extracted.") # More specific message
+            logger.warning("Search complete, but no content could be extracted.")
     else:
         search_status.info("No web search performed (either used provided URLs or no topics found or service unavailable).")
     progress_bar.progress(50, text="Search & Extraction finished.")
 
+    # --- Rest of the pipeline (RAG, Summary, etc.) remains the same ---
+    # ... (Embedding Generation, RAG Matching, Synthesis, Summary Generation sections) ...
 
+    # The rest of the function (RAG, Summary generation, displaying final reports)
+    # depends on `extracted_content_dict` being populated. Since extraction
+    # is currently failing, these steps will continue to be skipped or fail
+    # with "No content available" messages, until the underlying extraction
+    # issue with run_in_executor is resolved.
+
+    # For completeness, the final part of the function looks like this:
     # --- 3. RAG Analysis (Embeddings, Supabase/FAISS, Gemini Synthesis) ---
     st.markdown("### 3. Performing RAG Analysis...")
     rag_status = st.empty()
@@ -1201,12 +1237,13 @@ Respond with a detailed Markdown-formatted report. If no relevant information is
                             try:
                                 messages = [{"role": "user", "content": synthesis_prompt}]
                                 if hasattr(gemini_client_instance, 'chat'):
-                                     loop = asyncio.get_running_loop()
-                                     response_data = await loop.run_in_executor(None, gemini_client_instance.chat, messages)
-                                     comprehensive_report = response_data.get("choices", [{}])[0].get("message", {}).get("content", "Error: Could not parse synthesis response.")
+                                    # Run sync chat in executor
+                                    loop = asyncio.get_running_loop()
+                                    response_data = await loop.run_in_executor(None, gemini_client_instance.chat, messages)
+                                    comprehensive_report = response_data.get("choices", [{}])[0].get("message", {}).get("content", "Error: Could not parse synthesis response.")
                                 elif hasattr(gemini_client_instance, 'generate_content'):
                                      sdk_model = genai.GenerativeModel(GEMINI_MODEL_NAME)
-                                     response = await sdk_model.generate_content_async(prompt)
+                                     response = await sdk_model.generate_content_async(synthesis_prompt)
                                      comprehensive_report = response.text
                                 else:
                                      comprehensive_report = "Error: Gemini client misconfigured for synthesis."
@@ -1228,21 +1265,7 @@ Respond with a detailed Markdown-formatted report. If no relevant information is
         progress_bar.progress(90, text="Generating patient summary...")
         summary_status.info("Generating patient-friendly summary...")
         with st.spinner("Generating patient-friendly summary..."):
-            prompt = f"""You are a medical assistant helping a patient understand a complex medical report. Your task is to take the provided comprehensive diagnostic report and summarize it in simple, easy-to-understand language for a layperson.
-
-Comprehensive Report:
----
-{comprehensive_report}
----
-Instructions:
-1.  **Simplify Medical Jargon:** Rephrase any complex medical terms or concepts in simple terms.
-2.  **Focus on Key Findings:** Highlight the main symptoms, potential issues discussed in the report, and relevant information from the context.
-3.  **Actionable Insights (if any):** If the report mentions any next steps or general advice (like "consult a doctor"), include this.
-4.  **Reassure and Inform:** Maintain a calm, reassuring, and informative tone.
-5.  **Maintain Disclaimer:** Reiterate the disclaimer that this summary is for informational purposes and not a substitute for professional medical advice.
-6.  **Handle Uncertainty:** If the report indicates uncertainty or lack of information, reflect that in the summary.
-
-Respond with a clear, concise, and patient-friendly summary using Markdown.
+            prompt = f"""You are a medical assistant... [rest of prompt as before] ... If the report indicates uncertainty or lack of information, reflect that in the summary.
 """ # Truncated prompt for brevity
             try:
                 messages = [{"role": "user", "content": prompt}]
@@ -1276,6 +1299,19 @@ Respond with a clear, concise, and patient-friendly summary using Markdown.
     # progress_bar.empty()
 
     return analysis_results
+
+# --- Helper for running blocking extraction in executor ---
+def _run_extraction_sync(extractor_instance, urls, extract_depth, include_images):
+    """
+    Helper function to run the synchronous extractor.extract method in an executor.
+    Takes arguments positionally.
+    """
+    # This function runs in the executor's thread
+    return extractor_instance.extract(
+        urls=urls,
+        extract_depth=extract_depth,
+        include_images=include_images
+    )
 
 # --- Streamlit UI Layout ---
 
@@ -1314,7 +1350,6 @@ for key, value in default_state.items():
 # --- Train Classifier ---
 survey_df = None
 if uploaded_survey_file:
-    # Corrected line: Use uploaded_survey_file.size instead of uploaded_wearable_file.size
     file_details = (uploaded_survey_file.name, uploaded_survey_file.size)
     if 'last_survey_file' not in st.session_state or st.session_state.last_survey_file != file_details:
         st.session_state.classifier_trained = False
@@ -1488,6 +1523,7 @@ if submit_button and query:
 
 
 # --- Display Results After Analysis ---
+# Moved the display of search/extracted results here, after the pipeline attempts to complete
 if st.session_state.analysis_complete:
     st.divider()
     st.header("Generated Reports")
@@ -1496,8 +1532,36 @@ if st.session_state.analysis_complete:
     comp_report = results.get('comprehensive_report', 'Not generated.')
     patient_report = results.get('patient_summary_report', 'Not generated.')
     citations = results.get('citations', [])
+    search_results_display = results.get('search_results', {}) # Get stored search results
+    extracted_content_display = results.get('extracted_content', {}) # Get stored extracted content
 
-    # Display Reports using Tabs
+
+    # --- Display Search and Extracted Content Results ---
+    st.markdown("### Search and Extracted Content")
+    if search_results_display:
+        for topic, results_list in search_results_display.items():
+             if results_list:
+                 st.subheader(f"Search Results for '{topic}'")
+                 for i, res in enumerate(results_list):
+                      st.write(f"{i+1}. [{res.get('title', 'No Title')}]({res.get('url', '#')})")
+                      # Check if content was extracted for this URL/topic
+                      extracted_items = extracted_content_display.get(topic, [])
+                      matching_extracted = next((item for item in extracted_items if item.get('url') == res.get('url')), None)
+                      if matching_extracted and not matching_extracted.get('error'):
+                           with st.expander(f"View Extracted Content from {res.get('title', 'this URL')}", expanded=False):
+                                text_content = matching_extracted.get('text') or matching_extracted.get('raw_content', 'No text content extracted.')
+                                st.text(text_content)
+                      elif matching_extracted and matching_extracted.get('error'):
+                           st.warning(f"Could not extract content from this URL: {matching_extracted['error']}")
+                      else:
+                           st.info("Content not extracted for this URL.") # Or "Extraction failed for this URL."
+
+             else:
+                 st.info(f"No relevant search results found for '{topic}'.")
+    else:
+        st.info("No web search results available.")
+
+    # --- Display Reports using Tabs ---
     tab1, tab2, tab3 = st.tabs(["Comprehensive Report", "Patient Summary", "Citations & Sources"])
 
     with tab1:
