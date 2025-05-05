@@ -1,4 +1,4 @@
-%%writefile streamlit_app.py
+
 import streamlit as st
 import os
 import asyncio
