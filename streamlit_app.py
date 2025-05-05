@@ -84,7 +84,7 @@ GEMINI_API_KEY = st.secrets.get("api_keys", {}).get("GEMINI_API_KEY") or os.gete
 TAVILY_API_KEY = st.secrets.get("api_keys", {}).get("TAVILY_API_KEY") or os.getenv("TAVILY_API_KEY")
 SUPABASE_URL = st.secrets.get("supabase", {}).get("SUPABASE_URL") or os.getenv("SUPABASE_URL")
 SUPABASE_KEY = st.secrets.get("supabase", {}).get("SUPABASE_KEY") or os.getenv("SUPABASE_KEY")
-GEMINI_MODEL_NAME = st.secrets.get("models", {}).get("GEMINI_MODEL_NAME") or os.getenv("GEMINI_MODEL_NAME", "gemini-2.5-flash-preview-04-17")
+GEMINI_MODEL_NAME = st.secrets.get("models", {}).get("GEMINI_MODEL_NAME") or os.getenv("GEMINI_MODEL_NAME", "gemini-2.5-flash-exp-04-17")
 GOOGLE_EMBEDDING_MODEL = st.secrets.get("models", {}).get("GOOGLE_EMBEDDING_MODEL") or os.getenv("GOOGLE_EMBEDDING_MODEL", "text-embedding-004")
 
 if not all([GEMINI_API_KEY, TAVILY_API_KEY, SUPABASE_URL, SUPABASE_KEY]):
