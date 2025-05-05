@@ -882,9 +882,8 @@ async def run_analysis_pipeline(
                              raise ValueError("Search Service instance is not available.")
 
                         loop = asyncio.get_running_loop()
-
-                        # --- MODIFIED: Preparing kwargs dict and passing to lambda ---
-                        # This is another attempt to work around run_in_executor keyword arg issues
+                        # --- Modified search call using lambda and kwargs dict ---
+                        # This is an attempt to work around run_in_executor keyword arg issues
                         search_kwargs = {
                             "search_depth": search_depth,
                             "results": search_breadth # Use "results" key as used by WebSearchService
@@ -901,7 +900,8 @@ async def run_analysis_pipeline(
                             "medical", # category_arg argument for lambda
                             search_kwargs # kwargs_dict argument for lambda
                         )
-                        # --- END MODIFIED SECTION ---
+                        # --- End modified search call ---
+
 
                         results = response.get("results", [])
                         filtered_results = [
@@ -917,8 +917,22 @@ async def run_analysis_pipeline(
                              if not extractor_instance:
                                  raise ValueError("Extractor instance is not available.")
                              # Run sync extract method in executor
-                             extraction_response = await loop.run_in_executor(None, extractor_instance.extract,
-                                 urls=urls_to_extract, extract_depth="advanced", include_images=False)
+                             loop = asyncio.get_running_loop()
+                             # --- MODIFIED: Using lambda to wrap the synchronous extract call ---
+                             # This passes extract arguments as positional args to the lambda,
+                             # and the lambda calls extract with them unpacked from a dict.
+                             extract_kwargs = {
+                                 "urls": urls_to_extract,
+                                 "extract_depth": "advanced",
+                                 "include_images": False
+                             }
+                             extraction_response = await loop.run_in_executor(
+                                 None, # Use the default executor
+                                 lambda ext, kwargs_dict: ext.extract(**kwargs_dict),
+                                 extractor_instance, # ext argument for lambda
+                                 extract_kwargs # kwargs_dict argument for lambda
+                             )
+                             # --- END MODIFIED SECTION ---
 
                              extracted_content_dict[topic] = extraction_response.get("results", [])
                              failed_count = sum(1 for item in extracted_content_dict[topic] if item.get("error"))
@@ -945,8 +959,19 @@ async def run_analysis_pipeline(
                          raise ValueError("Extractor instance is not available.")
                     # Run sync extract method in executor
                     loop = asyncio.get_running_loop()
-                    extraction_response = await loop.run_in_executor(None, extractor_instance.extract,
-                         urls=filtered_urls, extract_depth="advanced", include_images=False)
+                    # --- MODIFIED: Using lambda to wrap the synchronous extract call for user URLs ---
+                    extract_kwargs = {
+                         "urls": filtered_urls,
+                         "extract_depth": "advanced",
+                         "include_images": False
+                    }
+                    extraction_response = await loop.run_in_executor(
+                         None, # Use the default executor
+                         lambda ext, kwargs_dict: ext.extract(**kwargs_dict),
+                         extractor_instance, # ext argument for lambda
+                         extract_kwargs # kwargs_dict argument for lambda
+                    )
+                    # --- END MODIFIED SECTION ---
 
                     extracted_content_dict["User Provided"] = extraction_response.get("results", [])
                     failed_count = sum(1 for item in extracted_content_dict["User Provided"] if item.get("error"))
@@ -1073,7 +1098,7 @@ async def run_analysis_pipeline(
                     if num_failed > 0:
                         rag_status.warning(f"Failed to generate embeddings for {num_failed} chunks.")
                     all_chunks = [all_chunks[i] for i in valid_indices]
-                    all_embeddings = [all_embeddings[i] for i in valid_embeddings]
+                    all_embeddings = [all_embeddings[i] for i in valid_indices]
 
                     if not all_chunks:
                          rag_status.error("Embedding generation failed for all chunks. Cannot proceed with RAG.")
@@ -1255,9 +1280,9 @@ with st.sidebar:
     query = st.text_area("1. Enter Patient Symptoms/Issue:", height=150, key="query_input", help="Describe the primary health concern or symptoms.")
     st.subheader("Web Search Options")
     # Corrected height to meet minimum requirement (68px)
-    include_urls_str = st.text_area("Include Specific URLs (one per line, optional):", height=150, key="include_urls", help="Force the agent to use only these URLs for information.") # Corrected line
+    include_urls_str = st.text_area("Include Specific URLs (one per line, optional):", height=150, key="include_urls", help="Force the agent to use only these URLs for information.")
     # Corrected height to meet minimum requirement (68px)
-    omit_urls_str = st.text_area("Omit URLs Containing (one per line, optional):", height=150, key="omit_urls", help="Exclude search results from URLs containing these strings (e.g., 'forum').") # Corrected line
+    omit_urls_str = st.text_area("Omit URLs Containing (one per line, optional):", height=150, key="omit_urls", help="Exclude search results from URLs containing these strings (e.g., 'forum').")
     search_depth = st.selectbox("Search Depth:", ["basic", "advanced"], index=1, key="search_depth", help="'basic' is faster, 'advanced' is more thorough.")
     search_breadth = st.number_input("Search Breadth (results per query):", min_value=3, max_value=20, value=7, key="search_breadth", help="Number of search results to retrieve for each identified topic.")
     st.subheader("Reference Files (Optional)")
