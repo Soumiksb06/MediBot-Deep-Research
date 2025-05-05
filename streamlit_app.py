@@ -1197,7 +1197,8 @@ with st.sidebar:
     st.header("Configuration")
     query = st.text_area("1. Enter Patient Symptoms/Issue:", height=150, key="query_input", help="Describe the primary health concern or symptoms.")
     st.subheader("Web Search Options")
-    include_urls_str = st.text_area("Include Specific URLs (one per line, optional):", height=50, key="include_urls", help="Force the agent to use only these URLs for information.")
+    # Corrected line: Changed height from 50 to 150
+    include_urls_str = st.text_area("Include Specific URLs (one per line, optional):", height=150, key="include_urls", help="Force the agent to use only these URLs for information.")
     omit_urls_str = st.text_area("Omit URLs Containing (one per line, optional):", height=50, key="omit_urls", help="Exclude search results from URLs containing these strings (e.g., 'forum').")
     search_depth = st.selectbox("Search Depth:", ["basic", "advanced"], index=1, key="search_depth", help="'basic' is faster, 'advanced' is more thorough.")
     search_breadth = st.number_input("Search Breadth (results per query):", min_value=3, max_value=20, value=7, key="search_breadth", help="Number of search results to retrieve for each identified topic.")
