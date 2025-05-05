@@ -12,6 +12,18 @@ from collections import Counter
 import base64
 import csv
 
+import nltk
+try:
+    nltk.data.find('sentiment/vader_lexicon.zip')
+except nltk.downloader.DownloadError:
+    nltk.download('vader_lexicon')
+
+import spacy
+try:
+    spacy.load("en_core_web_sm")
+except:
+    spacy.cli.download("en_core_web_sm")
+
 # Configure logging
 logging.basicConfig(
     filename="medical_agent.log",
